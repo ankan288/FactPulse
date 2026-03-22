@@ -15,10 +15,17 @@ from services.ranker import rank_evidence
 from services.scraper import ScraperException, scrape_url
 from services.searcher import search_evidence
 from services.verifier import verify_claim
+from services.debate_verifier import debate_verify
 
 load_dotenv()
 
 app = FastAPI(title="Fact & Claim Verification API", version="2.0.0")
+
+# ── Multi-agent debate settings ────────────────────────────────────────────
+# Trigger adversarial debate when initial confidence is below this threshold
+DEBATE_CONFIDENCE_THRESHOLD = 55
+# Max number of debates per request (protects Groq free tier rate limits)
+MAX_DEBATE_CLAIMS = 3
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,6 +104,7 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
 
         # ── Steps 2‑4: Search → Rank → Verify each claim ──────────────────
         stats = {"true": 0, "false": 0, "partial": 0, "unverifiable": 0, "total_confidence": 0}
+        debate_count = 0   # track how many debates have run (Groq rate limit guard)
 
         for claim in claims:
             cid = claim["id"]
@@ -107,8 +115,9 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
             except Exception:
                 raw_evidence = []
 
-            ranked = rank_evidence(claim["claim"], raw_evidence)
+            ranked = rank_evidence(claim["claim"], raw_evidence, temporal=claim.get("temporal", False))
 
+            # ── Fast path: single-agent verification ──────────────────────
             yield emit("verifying", {"claimId": cid})
             try:
                 result = await verify_claim(claim, ranked)
@@ -121,7 +130,28 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
                     "reasoning": f"Verification failed: {e}",
                     "citations": [],
                     "conflicting": False,
+                    "ambiguous": claim.get("ambiguous", False),
+                    "temporal": claim.get("temporal", False),
                 }
+
+            # ── Escalate to debate if uncertain and under cap ─────────────
+            needs_debate = (
+                result["confidence"] < DEBATE_CONFIDENCE_THRESHOLD
+                and debate_count < MAX_DEBATE_CLAIMS
+            )
+
+            if needs_debate:
+                yield emit("debating", {
+                    "claimId": cid,
+                    "message": f"Confidence {result['confidence']}% — escalating to adversarial debate…",
+                })
+                try:
+                    debate_result = await debate_verify(claim, ranked)
+                    result = debate_result
+                except Exception as e:
+                    # Keep the single-agent result if debate itself fails
+                    result["reasoning"] += f" (Debate escalation failed: {e})"
+                debate_count += 1
 
             yield emit("result", result)
 

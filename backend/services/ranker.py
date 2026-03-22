@@ -36,21 +36,37 @@ def _domain_score(url: str) -> int:
     return 10
 
 
-def _recency_score(published_date) -> int:
+def _recency_score(published_date, boost_recency: bool = False) -> int:
+    """Score by publication recency.
+    If boost_recency is True (temporal claim), very recent articles score higher
+    and old articles are penalized more heavily — staleness matters more.
+    """
     if not published_date:
         return 15
     try:
         pub = datetime.strptime(str(published_date)[:10], "%Y-%m-%d")
         days = (datetime.now() - pub).days
-        if days < 30:
-            return 30
-        if days < 180:
-            return 25
-        if days < 365:
-            return 20
-        if days < 730:
-            return 12
-        return 5
+        if boost_recency:
+            # For temporal claims: reward very fresh sources, penalise old ones
+            if days < 7:
+                return 40
+            if days < 30:
+                return 35
+            if days < 90:
+                return 20
+            if days < 365:
+                return 8
+            return 2
+        else:
+            if days < 30:
+                return 30
+            if days < 180:
+                return 25
+            if days < 365:
+                return 20
+            if days < 730:
+                return 12
+            return 5
     except Exception:
         return 15
 
@@ -66,13 +82,17 @@ def _relevance_score(claim: str, snippet: str) -> int:
     return min(30, int(ratio * 45))
 
 
-def rank_evidence(claim: str, evidence: List[Dict]) -> List[Dict]:
-    """Score and sort evidence; return top 5."""
+def rank_evidence(claim: str, evidence: List[Dict], temporal: bool = False) -> List[Dict]:
+    """Score and sort evidence; return top 5.
+
+    When temporal=True (time-sensitive claims like 'The CEO is...'),
+    the recency score is boosted so the most recent articles rank highest.
+    """
     scored = []
     for item in evidence:
         total = (
             _domain_score(item.get("url", ""))
-            + _recency_score(item.get("published_date"))
+            + _recency_score(item.get("published_date"), boost_recency=temporal)
             + _relevance_score(claim, item.get("snippet", ""))
         )
         scored.append({**item, "trust_score": total})

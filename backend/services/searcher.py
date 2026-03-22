@@ -1,32 +1,77 @@
+import asyncio
+import logging
 import os
 from typing import List, Dict
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 
 async def search_evidence(query: str, max_results: int = 5) -> List[Dict]:
-    """Search using Tavily (primary) with Google CSE fallback."""
+    """Search using Tavily (primary) with Google CSE fallback.
+    Both providers use retry with exponential backoff for rate-limit resilience.
+    """
     tavily_key = os.getenv("TAVILY_API_KEY", "")
     if tavily_key:
-        try:
-            results = await _tavily(query, tavily_key, max_results)
-            if results:
-                return results
-        except Exception:
-            pass
+        results = await _tavily_with_retry(query, tavily_key, max_results)
+        if results:
+            return results
 
     google_key = os.getenv("GOOGLE_API_KEY", "")
     cse_id = os.getenv("GOOGLE_CSE_ID", "")
     if google_key and cse_id:
-        try:
-            results = await _google_cse(query, google_key, cse_id, max_results)
-            if results:
-                return results
-        except Exception:
-            pass
+        results = await _google_cse_with_retry(query, google_key, cse_id, max_results)
+        if results:
+            return results
 
+    logger.warning("All search providers exhausted for query: %s", query[:80])
     return []
 
+
+# ── Retry wrappers ──────────────────────────────────────────────────────────
+
+async def _tavily_with_retry(query: str, api_key: str, max_results: int, retries: int = 3) -> List[Dict]:
+    """Retry Tavily up to `retries` times with exponential backoff (1s, 2s, 4s)."""
+    for attempt in range(retries):
+        try:
+            return await _tavily(query, api_key, max_results)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                wait = 2 ** attempt
+                logger.warning("Tavily rate-limited (429). Waiting %ds (attempt %d/%d)…", wait, attempt + 1, retries)
+                await asyncio.sleep(wait)
+            else:
+                logger.error("Tavily HTTP error %d: %s", e.response.status_code, e)
+                break
+        except Exception as e:
+            logger.error("Tavily search failed (attempt %d/%d): %s", attempt + 1, retries, e)
+            if attempt < retries - 1:
+                await asyncio.sleep(2 ** attempt)
+    return []
+
+
+async def _google_cse_with_retry(query: str, api_key: str, cse_id: str, max_results: int, retries: int = 3) -> List[Dict]:
+    """Retry Google CSE up to `retries` times with exponential backoff."""
+    for attempt in range(retries):
+        try:
+            return await _google_cse(query, api_key, cse_id, max_results)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                wait = 2 ** attempt
+                logger.warning("Google CSE rate-limited (429). Waiting %ds (attempt %d/%d)…", wait, attempt + 1, retries)
+                await asyncio.sleep(wait)
+            else:
+                logger.error("Google CSE HTTP error %d: %s", e.response.status_code, e)
+                break
+        except Exception as e:
+            logger.error("Google CSE search failed (attempt %d/%d): %s", attempt + 1, retries, e)
+            if attempt < retries - 1:
+                await asyncio.sleep(2 ** attempt)
+    return []
+
+
+# ── Raw API callers ─────────────────────────────────────────────────────────
 
 async def _tavily(query: str, api_key: str, max_results: int) -> List[Dict]:
     async with httpx.AsyncClient(timeout=12.0) as client:
