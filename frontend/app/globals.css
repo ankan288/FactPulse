@@ -30,6 +30,14 @@
 
 html { scroll-behavior: smooth; }
 
+/* Hide Next.js dev progress bar and scrollbar */
+::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+::-webkit-scrollbar-track { display: none !important; background: transparent !important; }
+::-webkit-scrollbar-thumb { display: none !important; background: transparent !important; }
+html { scrollbar-width: none !important; }
+body::after { display: none !important; }
+[class*="progress"] { display: none !important; }
+
 body {
   font-family: 'Inter', sans-serif;
   background: var(--bg-deep);

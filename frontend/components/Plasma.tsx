@@ -102,6 +102,7 @@ export const Plasma: React.FC<PlasmaProps> = ({
 
   useEffect(() => {
     if (!containerRef.current) return;
+    const containerEl = containerRef.current;
 
     const useCustomColor = color ? 1.0 : 0.0;
     const customColorRgb = color ? hexToRgb(color) : [1, 1, 1];
@@ -119,7 +120,9 @@ export const Plasma: React.FC<PlasmaProps> = ({
     canvas.style.display = 'block';
     canvas.style.width = '100%';
     canvas.style.height = '100%';
-    containerRef.current.appendChild(canvas);
+    canvas.style.position = 'absolute';
+    canvas.style.inset = '0';
+    containerEl.appendChild(canvas);
 
     const geometry = new Triangle(gl);
 
@@ -144,7 +147,7 @@ export const Plasma: React.FC<PlasmaProps> = ({
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!mouseInteractive) return;
-      const rect = containerRef.current!.getBoundingClientRect();
+      const rect = containerEl.getBoundingClientRect();
       mousePos.current.x = e.clientX - rect.left;
       mousePos.current.y = e.clientY - rect.top;
       const mouseUniform = program.uniforms.uMouse.value as Float32Array;
@@ -153,13 +156,17 @@ export const Plasma: React.FC<PlasmaProps> = ({
     };
 
     if (mouseInteractive) {
-      containerRef.current.addEventListener('mousemove', handleMouseMove);
+      containerEl.addEventListener('mousemove', handleMouseMove);
     }
 
+    let hasRenderableSize = false;
     const setSize = () => {
-      const rect = containerRef.current!.getBoundingClientRect();
+      const rect = containerEl.getBoundingClientRect();
       const width = Math.max(1, Math.floor(rect.width));
       const height = Math.max(1, Math.floor(rect.height));
+      hasRenderableSize = width > 2 && height > 2;
+
+      if (!hasRenderableSize) return;
       renderer.setSize(width, height);
       const res = program.uniforms.iResolution.value as Float32Array;
       res[0] = gl.drawingBufferWidth;
@@ -167,12 +174,18 @@ export const Plasma: React.FC<PlasmaProps> = ({
     };
 
     const ro = new ResizeObserver(setSize);
-    ro.observe(containerRef.current);
+    ro.observe(containerEl);
     setSize();
 
     let raf = 0;
     const t0 = performance.now();
     const loop = (t: number) => {
+      if (!hasRenderableSize) {
+        setSize();
+        raf = requestAnimationFrame(loop);
+        return;
+      }
+
       let timeValue = (t - t0) * 0.001;
       if (direction === 'pingpong') {
         const pingpongDuration = 10;
@@ -194,11 +207,14 @@ export const Plasma: React.FC<PlasmaProps> = ({
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
-      if (mouseInteractive && containerRef.current) {
-        containerRef.current.removeEventListener('mousemove', handleMouseMove);
+      if (mouseInteractive) {
+        containerEl.removeEventListener('mousemove', handleMouseMove);
       }
+
+      const loseContext = gl.getExtension('WEBGL_lose_context');
+      loseContext?.loseContext();
       try {
-        containerRef.current?.removeChild(canvas);
+        containerEl.removeChild(canvas);
       } catch {}
     };
   }, [color, speed, direction, scale, opacity, mouseInteractive]);

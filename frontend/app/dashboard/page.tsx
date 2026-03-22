@@ -11,6 +11,9 @@ import ClaimCard from "@/components/ClaimCard";
 import type { Claim } from "@/components/ClaimCard";
 import AccuracyReport from "@/components/AccuracyReport";
 import AIDetectionBadge from "@/components/AIDetectionBadge";
+import ProfileDropdown from "@/components/ProfileDropdown";
+import Plasma from "@/components/Plasma";
+import LiquidEther from "@/components/LiquidEther";
 import {
   streamVerify,
   type PipelineEvent,
@@ -29,6 +32,7 @@ export default function Dashboard() {
 
   const [inputMode,     setInputMode]     = useState<"text" | "url">("text");
   const [inputValue,    setInputValue]    = useState("");
+  const [selectedFile,  setSelectedFile]  = useState<File | null>(null);
   const [claims,        setClaims]        = useState<Claim[]>([]);
   const [currentStep,   setCurrentStep]   = useState("");
   const [statusMessage, setStatusMessage] = useState("");
@@ -89,21 +93,34 @@ export default function Dashboard() {
   }, []);
 
   const handleSubmit = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() && !selectedFile) return;
     abortRef.current = new AbortController();
     setAppState("running");
     setClaims([]); setSummary(null); setAiResult(null);
     setErrorMsg(""); setCurrentStep("extracting");
     setStatusMessage("Starting pipeline…"); setProcessedCount(0);
     try {
-      const payload = inputMode === "text" ? { text: inputValue } : { url: inputValue };
+      let payload: any;
+      if (selectedFile) {
+        // For file uploads (image, video, audio)
+        payload = new FormData();
+        payload.append("file", selectedFile);
+        payload.append("type", inputMode); // image, video, or audio
+      } else {
+        // For text/URL
+        payload = inputMode === "text" ? { text: inputValue } : { url: inputValue };
+      }
       await streamVerify(payload, handleEvent, abortRef.current.signal);
     } catch (e: unknown) {
       if ((e as Error).name !== "AbortError") {
         setErrorMsg((e as Error).message || "Unknown error");
         setAppState("error");
-      }
+      } setSelectedFile(null);
     }
+  };
+
+  const handleFileSelect = (file: File) => {
+    setSelectedFile(file);
   };
 
   const handleCancel = () => { abortRef.current?.abort(); setAppState("input"); };
@@ -122,10 +139,40 @@ export default function Dashboard() {
 
       {/* ── HERO SECTION ── */}
       <motion.section
-        animate={{ height: isHero ? "100vh" : "auto" }}
+        animate={{ height: isHero ? "100vh" : isResult ? "auto" : "100vh" }}
         transition={{ duration: 0.6, ease: [0.4, 0, 0.2, 1] }}
-        style={{ minHeight: isHero ? "100vh" : 0, position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(to bottom, #050d1a 0%, #0a1122 100%)" }}
+        style={{ 
+          minHeight: isHero ? "100vh" : "auto",
+          position: "relative", 
+          overflow: "hidden", 
+          display: "flex", 
+          alignItems: "center",
+          justifyContent: "center", 
+          background: "linear-gradient(to bottom, #050d1a 0%, #0a1122 100%)",
+          paddingTop: isResult ? 32 : 0,
+        }}
       >
+        <div style={{ position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none" }}>
+          <Plasma
+            color="#c5b4ff"
+            speed={0.38}
+            direction="forward"
+            scale={1.32}
+            opacity={0.52}
+            mouseInteractive={false}
+          />
+        </div>
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 1,
+            pointerEvents: "none",
+            background:
+              "radial-gradient(circle at 50% 44%, rgba(24,18,56,0.08) 0%, rgba(6,6,20,0.56) 62%, rgba(2,2,10,0.78) 100%)",
+          }}
+        />
+
         {/* Top Navbar Logo */}
         <div style={{ position: "absolute", top: 32, left: 32, zIndex: 10, display: "flex", alignItems: "center", gap: 12, color: "#fff", fontWeight: 600, fontSize: 20 }}>
           <Link href="/" style={{ textDecoration: "none", color: "inherit", display: "flex", alignItems: "center", gap: 8 }}>
@@ -133,37 +180,51 @@ export default function Dashboard() {
           </Link>
         </div>
 
-        {/* Hero content */}
-        <div style={{ position: "relative", zIndex: 2, width: "100%", maxWidth: 820, margin: "0 auto", padding: "0 24px", textAlign: "center" }}>
-
-          <AnimatePresence mode="wait">
-            {/* Input mode — InputPanel slides up */}
-            {appState === "input" && (
-              <motion.div key="input" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.4 }}>
-                <h2 style={{ fontSize: "clamp(22px,4vw,36px)", fontWeight: 800, marginBottom: 8, background: "linear-gradient(135deg,#fff 40%,var(--accent-cyan))", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-                  FactCheck AI
-                </h2>
-                <p style={{ fontSize: 14, color: "rgba(240,244,248,0.55)", marginBottom: 24 }}>
-                  Paste text or a URL. We extract every verifiable claim, search live evidence, and generate an explainable accuracy report in seconds.
-                </p>
-                <InputPanel
-                  inputMode={inputMode} setInputMode={setInputMode}
-                  inputValue={inputValue} setInputValue={setInputValue}
-                  onSubmit={handleSubmit}
-                  isLoading={false}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Running state — show compact header in hero */}
-          {appState === "running" && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              <h2 style={{ fontSize: 28, fontWeight: 800, marginBottom: 6, color: "#fff" }}>Analysing…</h2>
-              <p style={{ fontSize: 14, color: "rgba(240,244,248,0.5)" }}>Scroll down to see results as they arrive</p>
-            </motion.div>
-          )}
+        {/* Profile Dropdown - Top Right */}
+        <div style={{ position: "absolute", top: 32, right: 32, zIndex: 10 }}>
+          <ProfileDropdown username="John Doe" email="john@example.com" />
         </div>
+
+        {/* Hero content */}
+        {isHero && (
+          <div style={{ position: "relative", zIndex: 2, width: "100%", maxWidth: 820, margin: "0 auto", padding: "0 24px", textAlign: "center" }}>
+            <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+              <h2 style={{ fontSize: "clamp(22px,4vw,36px)", fontWeight: 800, marginBottom: 8, background: "linear-gradient(135deg,#fff 40%,var(--accent-cyan))", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                FactPulse AI
+              </h2>
+              <p style={{ fontSize: 14, color: "rgba(240,244,248,0.55)", marginBottom: 24 }}>
+                Paste. Verify. Trust the evidence.
+              </p>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Running/Done state header */}
+        {isResult && (
+          <div style={{ position: "relative", zIndex: 2, width: "100%", textAlign: "center" }}>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4, color: "#fff" }}>
+                {appState === "running" ? "Analysing Your Content" : "Analysis Complete"}
+              </h2>
+              <p style={{ fontSize: 13, color: "rgba(240,244,248,0.5)" }}>
+                {appState === "running" ? "Results appear in real-time below" : "Review the findings below or analyze another item"}
+              </p>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Fixed bottom-left compact input panel (always visible) */}
+        <InputPanel
+          inputMode={inputMode}
+          setInputMode={setInputMode}
+          inputValue={inputValue}
+          setInputValue={setInputValue}
+          onSubmit={handleSubmit}
+          isLoading={appState === "running"}
+          onCancel={appState === "running" ? handleCancel : undefined}
+          isCompactMode={true}
+          onFileSelect={handleFileSelect}
+        />
       </motion.section>
 
       {/* ── RESULTS SECTION ── */}
@@ -172,9 +233,46 @@ export default function Dashboard() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            style={{ flex: 1, background: "var(--bg-deep)", paddingBottom: 80 }}
+            style={{
+              flex: 1,
+              background: "linear-gradient(180deg, #060a1a 0%, #020814 100%)",
+              paddingBottom: 24,
+              paddingRight: 24,
+              paddingLeft: 24,
+              position: "relative",
+              overflow: "hidden",
+            }}
           >
-            <div className="container" style={{ paddingTop: 32 }}>
+            <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+              <LiquidEther
+                colors={["#5227FF", "#FF9FFC", "#B19EEF"]}
+                mouseForce={60}
+                cursorSize={120}
+                isViscous
+                viscous={20}
+                iterationsViscous={32}
+                iterationsPoisson={32}
+                resolution={0.85}
+                isBounce={false}
+                autoDemo
+                autoSpeed={0.5}
+                autoIntensity={2.0}
+                takeoverDuration={0.25}
+                autoResumeDelay={0}
+                autoRampDuration={0.7}
+              />
+            </div>
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                zIndex: 0,
+                pointerEvents: "none",
+                background:
+                  "radial-gradient(circle at 35% 20%, rgba(10,8,28,0.18), rgba(4,6,16,0.58) 56%, rgba(2,4,12,0.72) 100%)",
+              }}
+            />
+            <div className="container" style={{ paddingTop: 24, maxWidth: 900, margin: "0 auto", position: "relative", zIndex: 2 }}>
 
               {/* Pipeline progress */}
               {appState === "running" && (
