@@ -1,10 +1,94 @@
+import asyncio
 import json
+import logging
 import math
 import os
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import litellm
+
+from utils.llm_retry import retry_on_rate_limit, RateLimitError
+
+logger = logging.getLogger(__name__)
+
+# Timeout for AI detection LLM call
+LLM_TIMEOUT = 20.0
+
+
+def _get_available_providers() -> List[Tuple[str, str, Optional[str]]]:
+    """
+    Get list of available LLM providers based on configured API keys.
+    Returns list of tuples: (model, api_key, api_base)
+    """
+    providers = []
+
+    # 1. Google Gemini (best for AI detection - generous free tier)
+    google_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if google_key:
+        providers.append((
+            "gemini/gemini-1.5-flash",
+            google_key,
+            None
+        ))
+
+    # 2. NVIDIA NIM API
+    nvidia_key = os.getenv("NVIDIA_API_KEY")
+    if nvidia_key:
+        providers.append((
+            "openai/meta/llama-3.1-70b-instruct",
+            nvidia_key,
+            "https://integrate.api.nvidia.com/v1"
+        ))
+
+    # 3. Groq
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        providers.append((
+            "groq/llama-3.3-70b-versatile",
+            groq_key,
+            None
+        ))
+
+    # 4. Together.ai
+    together_key = os.getenv("TOGETHER_API_KEY")
+    if together_key:
+        providers.append((
+            "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            together_key,
+            None
+        ))
+
+    return providers
+
+
+async def _call_provider(
+    model: str,
+    api_key: str,
+    api_base: Optional[str],
+    prompt: str
+) -> Optional[str]:
+    """Call a single LLM provider with retry logic."""
+    @retry_on_rate_limit(max_attempts=2, base_delay=1.5)
+    async def _make_request():
+        return await litellm.acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            **({"api_base": api_base} if api_base else {}),
+            temperature=0.1,
+            max_tokens=300,
+        )
+
+    try:
+        response = await asyncio.wait_for(_make_request(), timeout=LLM_TIMEOUT)
+        return response.choices[0].message.content.strip()
+    except (asyncio.TimeoutError, RateLimitError) as e:
+        logger.warning(f"Provider {model} failed: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Provider {model} error: {e}")
+        return None
 
 
 def _stylometric(text: str) -> Dict:
@@ -48,7 +132,10 @@ def _style_score(features: Dict) -> int:
 
 
 async def detect_ai_text(text: str) -> Dict:
-    """Detect AI-authorship probability using stylometric analysis + Gemini classifier."""
+    """Detect AI-authorship probability using stylometric analysis + LLM classifier.
+
+    Uses cascading fallback through available providers.
+    """
     sample = text[:3000]
     features = _stylometric(sample)
     style_sub = _style_score(features)
@@ -68,39 +155,38 @@ Text:
 Respond ONLY with valid JSON (no markdown):
 {{"ai_probability":<0-100>,"label":"LIKELY_HUMAN"|"AI_ASSISTED"|"LIKELY_AI","signals":["signal1","signal2","signal3"]}}"""
 
-    llm_score = 50
-    label = "AI_ASSISTED"
-    signals: List[str] = []
+    providers = _get_available_providers()
+
+    if not providers:
+        raise ValueError(
+            "No LLM API key configured for AI detection. Set one of: "
+            "GEMINI_API_KEY, NVIDIA_API_KEY, GROQ_API_KEY, or TOGETHER_API_KEY"
+        )
+
+    # Try each provider in order until one succeeds
+    raw = None
+    for model, api_key, api_base in providers:
+        logger.info(f"Trying LLM provider for AI detection: {model}")
+        raw = await _call_provider(model, api_key, api_base, prompt)
+        if raw:
+            logger.info(f"Success with provider: {model}")
+            break
+        logger.warning(f"Provider {model} failed, trying next...")
+
+    if not raw:
+        logger.error("All LLM providers failed for AI detection")
+        raise RuntimeError("All AI detection providers are currently unavailable. Please try again later.")
 
     try:
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        groq_key = os.getenv("GROQ_API_KEY")
-        
-        if gemini_key:
-            model = "gemini/gemini-1.5-flash-latest"
-            api_key = gemini_key
-        elif groq_key:
-            model = "groq/llama-3.3-70b-versatile"
-            api_key = groq_key
-        else:
-            raise ValueError("Neither GEMINI_API_KEY nor GROQ_API_KEY is configured.")
-
-        resp = litellm.completion(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            api_key=api_key,
-            temperature=0.1,
-            max_tokens=300,
-        )
-        raw = resp.choices[0].message.content.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
         llm_score = int(parsed.get("ai_probability", 50))
         label = parsed.get("label", "AI_ASSISTED")
         signals = parsed.get("signals", [])
-    except Exception:
-        signals = ["Analysis inconclusive"]
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error("AI detection response parsing failed: %s", e)
+        raise RuntimeError("AI detection service returned invalid response.")
 
     # Blend: 35% stylometric, 65% LLM
     final = round(0.35 * (style_sub / 50 * 100) + 0.65 * llm_score)

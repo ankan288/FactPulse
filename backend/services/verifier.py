@@ -3,28 +3,105 @@ import json
 import logging
 import os
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
 import litellm
+
+from utils.llm_retry import retry_on_rate_limit, RateLimitError
 
 logger = logging.getLogger(__name__)
 
 # Timeout (seconds) for a single LLM verification call
-LLM_TIMEOUT = 20.0
+LLM_TIMEOUT = 25.0
 
 
-def get_llm_config() -> tuple:
-    """Return (model_name, api_key, api_base).
-    Priority: NVIDIA NIM → Groq.
-    NVIDIA has far higher rate limits; Groq is the fallback.
+def _get_available_providers() -> List[Tuple[str, str, Optional[str]]]:
     """
+    Get list of available LLM providers based on configured API keys.
+    Returns list of tuples: (model, api_key, api_base)
+    Providers are ordered by preference (fastest/cheapest first).
+    """
+    providers = []
+
+    # 1. NVIDIA NIM API (generous free tier - 1000 requests/day)
     nvidia_key = os.getenv("NVIDIA_API_KEY")
-    groq_key = os.getenv("GROQ_API_KEY")
     if nvidia_key:
-        return "openai/meta/llama-3.1-70b-instruct", nvidia_key, "https://integrate.api.nvidia.com/v1"
+        providers.append((
+            "openai/meta/llama-3.1-70b-instruct",
+            nvidia_key,
+            "https://integrate.api.nvidia.com/v1"
+        ))
+
+    # 2. Groq (fast but limited - 100k tokens/day on free tier)
+    groq_key = os.getenv("GROQ_API_KEY")
     if groq_key:
-        return "groq/llama-3.3-70b-versatile", groq_key, None
-    raise ValueError("No LLM API key configured. Set NVIDIA_API_KEY or GROQ_API_KEY.")
+        providers.append((
+            "groq/llama-3.3-70b-versatile",
+            groq_key,
+            None
+        ))
+
+    # 3. Together.ai (good free tier option)
+    together_key = os.getenv("TOGETHER_API_KEY")
+    if together_key:
+        providers.append((
+            "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            together_key,
+            None
+        ))
+
+    # 4. OpenRouter (aggregates many providers)
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if openrouter_key:
+        providers.append((
+            "openrouter/meta-llama/llama-3.1-70b-instruct",
+            openrouter_key,
+            None
+        ))
+
+    # 5. Google Gemini (generous free tier)
+    google_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if google_key:
+        providers.append((
+            "gemini/gemini-1.5-flash",
+            google_key,
+            None
+        ))
+
+    return providers
+
+
+async def _call_provider(
+    model: str,
+    api_key: str,
+    api_base: Optional[str],
+    prompt: str,
+    max_tokens: int = 800
+) -> Optional[str]:
+    """
+    Call a single LLM provider with retry logic.
+    Returns the response content or None if failed.
+    """
+    @retry_on_rate_limit(max_attempts=2, base_delay=1.5)
+    async def _make_request():
+        return await litellm.acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            **({"api_base": api_base} if api_base else {}),
+            temperature=0.1,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = await asyncio.wait_for(_make_request(), timeout=LLM_TIMEOUT)
+        return response.choices[0].message.content.strip()
+    except (asyncio.TimeoutError, RateLimitError) as e:
+        logger.warning(f"Provider {model} failed: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Provider {model} error: {e}")
+        return None
 
 
 def _extract_numbers(text: str) -> List[float]:
@@ -91,8 +168,9 @@ def _conflict_strength(evidence: List[Dict]) -> int:
 
 
 async def verify_claim(claim: Dict, evidence: List[Dict]) -> Dict:
-    """Hybrid 3-layer verification: LLM (Gemini Pro) + Rule checks + Conflict detection.
+    """Hybrid 3-layer verification: LLM + Rule checks + Conflict detection.
 
+    Uses cascading fallback: tries each configured provider until one succeeds.
     Handles three special cases with tailored prompt instructions:
     1. Conflicting sources       → instructs LLM to weigh source credibility
     2. Ambiguous claims          → instructs LLM to acknowledge interpretive uncertainty
@@ -182,26 +260,36 @@ Respond with ONLY valid JSON (no markdown). You MUST include the reflection step
   "key_indices": [<1-5>]
 }}"""
 
-    model, api_key, api_base = get_llm_config()
-    loop = asyncio.get_event_loop()
+    providers = _get_available_providers()
 
-    try:
-        resp = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: litellm.completion(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    api_key=api_key,
-                    **(({"api_base": api_base}) if api_base else {}),
-                    temperature=0.1,
-                    max_tokens=800,
-                ),
-            ),
-            timeout=LLM_TIMEOUT,
+    if not providers:
+        raise ValueError(
+            "No LLM API key configured. Set one of: NVIDIA_API_KEY, GROQ_API_KEY, "
+            "TOGETHER_API_KEY, OPENROUTER_API_KEY, or GOOGLE_API_KEY"
         )
 
-        raw = resp.choices[0].message.content.strip()
+    # Try each provider in order until one succeeds
+    raw = None
+    for model, api_key, api_base in providers:
+        logger.info(f"Trying LLM provider for verification: {model}")
+        raw = await _call_provider(model, api_key, api_base, prompt, max_tokens=800)
+        if raw:
+            logger.info(f"Success with provider: {model}")
+            break
+        logger.warning(f"Provider {model} failed, trying next...")
+
+    if not raw:
+        logger.error("All LLM providers failed for verify_claim %s", cid)
+        return {
+            "claimId": cid, "claim": claim_text,
+            "verdict": "UNVERIFIABLE", "confidence": 10,
+            "reasoning": "All verification services are currently unavailable. Please try again later.",
+            "citations": [{"title": e["title"], "url": e["url"], "snippet": e["snippet"][:200], "trustScore": e.get("trust_score", 50)} for e in evidence[:2]],
+            "conflicting": is_conflicting, "ruleFlags": rule["flags"],
+            "ambiguous": is_ambiguous, "temporal": is_temporal,
+        }
+
+    try:
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
@@ -256,18 +344,8 @@ Respond with ONLY valid JSON (no markdown). You MUST include the reflection step
             "ambiguous": is_ambiguous, "temporal": is_temporal,
         }
 
-    except asyncio.TimeoutError:
-        logger.error("verify_claim timed out after %.0fs for claim %s", LLM_TIMEOUT, cid)
-        return {
-            "claimId": cid, "claim": claim_text,
-            "verdict": "UNVERIFIABLE", "confidence": 10,
-            "reasoning": "Verification timed out — the AI service did not respond in time.",
-            "citations": [{"title": e["title"], "url": e["url"], "snippet": e["snippet"][:200], "trustScore": e.get("trust_score", 50)} for e in evidence[:2]],
-            "conflicting": is_conflicting, "ruleFlags": rule["flags"],
-            "ambiguous": is_ambiguous, "temporal": is_temporal,
-        }
     except (json.JSONDecodeError, Exception) as e:
-        logger.error("verify_claim failed for claim %s: %s", cid, e)
+        logger.error("verify_claim failed to parse response for claim %s: %s", cid, e, exc_info=True)
         return {
             "claimId": cid, "claim": claim_text,
             "verdict": "UNVERIFIABLE", "confidence": 20,
