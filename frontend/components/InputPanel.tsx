@@ -17,12 +17,13 @@ interface Props {
   isLoading: boolean;
   onCancel?: () => void;
   isCompactMode?: boolean;
+  compactStyle?: React.CSSProperties;
   onFileSelect?: (file: File) => void;
 }
 
 export default function InputPanel({
   inputMode, setInputMode, inputValue, setInputValue,
-  onSubmit, isLoading, onCancel, isCompactMode = false, onFileSelect,
+  onSubmit, isLoading, onCancel, isCompactMode = false, compactStyle, onFileSelect,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [textareaRows, setTextareaRows] = useState(1);
@@ -97,6 +98,7 @@ export default function InputPanel({
           display: "flex",
           flexDirection: "column",
           gap: 12,
+          ...compactStyle,
         }}
       >
         {/* Compact mode selector */}

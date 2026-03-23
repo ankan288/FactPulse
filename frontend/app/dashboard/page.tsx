@@ -13,8 +13,7 @@ import AccuracyReport from "@/components/AccuracyReport";
 import AIDetectionBadge from "@/components/AIDetectionBadge";
 import MediaDetectionReport from "@/components/MediaDetectionReport";
 import ProfileDropdown from "@/components/ProfileDropdown";
-import Plasma from "@/components/Plasma";
-import LiquidEther from "@/components/LiquidEther";
+import ColorBends from "@/components/ColorBends";
 import {
   streamVerify,
   type PipelineEvent,
@@ -145,6 +144,19 @@ export default function Dashboard() {
 
   const isHero   = appState === "input";
   const isResult = appState === "running" || appState === "done" || appState === "error";
+  const colorBendsProps = {
+    colors: ["#ff5c7a", "#8a5cff", "#00ffd1"],
+    rotation: 0,
+    speed: 0.2,
+    scale: 1,
+    frequency: 1,
+    warpStrength: 1,
+    mouseInfluence: 1,
+    parallax: 0.5,
+    noise: 0.1,
+    transparent: true,
+    autoRotate: 0,
+  };
 
   return (
     <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", backgroundColor: "#000" }}>
@@ -160,19 +172,12 @@ export default function Dashboard() {
           display: "flex", 
           alignItems: "center",
           justifyContent: "center", 
-          background: "linear-gradient(to bottom, #050d1a 0%, #0a1122 100%)",
+          background: "linear-gradient(to bottom, #050312 0%, #07061a 45%, #03040d 100%)",
           paddingTop: isResult ? 32 : 0,
         }}
       >
         <div style={{ position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none" }}>
-          <Plasma
-            color="#c5b4ff"
-            speed={0.38}
-            direction="forward"
-            scale={1.32}
-            opacity={0.52}
-            mouseInteractive={false}
-          />
+          <ColorBends {...colorBendsProps} />
         </div>
         <div
           style={{
@@ -181,7 +186,7 @@ export default function Dashboard() {
             zIndex: 1,
             pointerEvents: "none",
             background:
-              "radial-gradient(circle at 50% 44%, rgba(24,18,56,0.08) 0%, rgba(6,6,20,0.56) 62%, rgba(2,2,10,0.78) 100%)",
+              "radial-gradient(circle at 50% 44%, rgba(40,40,90,0.08) 0%, rgba(6,6,20,0.34) 58%, rgba(3,3,12,0.64) 100%)",
           }}
         />
 
@@ -225,18 +230,28 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Fixed bottom-left compact input panel (always visible) */}
-        <InputPanel
-          inputMode={inputMode}
-          setInputMode={setInputMode}
-          inputValue={inputValue}
-          setInputValue={setInputValue}
-          onSubmit={handleSubmit}
-          isLoading={appState === "running"}
-          onCancel={appState === "running" ? handleCancel : undefined}
-          isCompactMode={true}
-          onFileSelect={handleFileSelect}
-        />
+        {/* Fixed bottom-left compact input panel (input screen only) */}
+        {isHero && (
+          <InputPanel
+            inputMode={inputMode}
+            setInputMode={setInputMode}
+            inputValue={inputValue}
+            setInputValue={setInputValue}
+            onSubmit={handleSubmit}
+            isLoading={false}
+            onCancel={undefined}
+            isCompactMode={true}
+            compactStyle={{
+              left: "35%",
+              bottom: "auto",
+              top: "64%",
+              transform: "none",
+              maxWidth: 620,
+              width: "min(94vw, 620px)",
+            }}
+            onFileSelect={handleFileSelect}
+          />
+        )}
       </motion.section>
 
       {/* ── RESULTS SECTION ── */}
@@ -247,7 +262,7 @@ export default function Dashboard() {
             animate={{ opacity: 1 }}
             style={{
               flex: 1,
-              background: "linear-gradient(180deg, #060a1a 0%, #020814 100%)",
+              background: "linear-gradient(180deg, #050312 0%, #03040d 100%)",
               paddingBottom: 24,
               paddingRight: 24,
               paddingLeft: 24,
@@ -256,23 +271,7 @@ export default function Dashboard() {
             }}
           >
             <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
-              <LiquidEther
-                colors={["#5227FF", "#FF9FFC", "#B19EEF"]}
-                mouseForce={60}
-                cursorSize={120}
-                isViscous
-                viscous={20}
-                iterationsViscous={32}
-                iterationsPoisson={32}
-                resolution={0.85}
-                isBounce={false}
-                autoDemo
-                autoSpeed={0.5}
-                autoIntensity={2.0}
-                takeoverDuration={0.25}
-                autoResumeDelay={0}
-                autoRampDuration={0.7}
-              />
+              <ColorBends {...colorBendsProps} />
             </div>
             <div
               style={{
@@ -281,7 +280,7 @@ export default function Dashboard() {
                 zIndex: 0,
                 pointerEvents: "none",
                 background:
-                  "radial-gradient(circle at 35% 20%, rgba(10,8,28,0.18), rgba(4,6,16,0.58) 56%, rgba(2,4,12,0.72) 100%)",
+                  "radial-gradient(circle at 35% 20%, rgba(18,16,44,0.14), rgba(5,6,18,0.42) 58%, rgba(2,3,10,0.7) 100%)",
               }}
             />
             <div className="container" style={{ paddingTop: 24, maxWidth: 900, margin: "0 auto", position: "relative", zIndex: 2 }}>
