@@ -30,7 +30,7 @@ async def _run_agent(role_prompt: str, claim_text: str, ev_block: str) -> str:
     """Run a single debate agent and return its raw text argument.
     Falls back to empty string on timeout or error.
     """
-    model, api_key = get_llm_config()
+    model, api_key, api_base = get_llm_config()
     loop = asyncio.get_event_loop()
 
     prompt = f"""{role_prompt}
@@ -57,6 +57,7 @@ Respond with ONLY valid JSON. You MUST include your reflection before the final 
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     api_key=api_key,
+                    **(({"api_base": api_base}) if api_base else {}),
                     temperature=0.2,
                     max_tokens=600,
                 ),
@@ -67,7 +68,7 @@ Respond with ONLY valid JSON. You MUST include your reflection before the final 
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
-        return parsed.get("argument", ""), parsed.get("key_indices", [])
+        return parsed.get("argument", ""), [int(x) for x in parsed.get("key_indices", []) if str(x).isdigit()]
     except asyncio.TimeoutError:
         logger.warning("Debate agent timed out.")
         return "", []
@@ -142,7 +143,7 @@ async def debate_verify(claim: Dict, evidence: List[Dict]) -> Dict:
 
     # ── Step 3: Judge agent ──────────────────────────────────────────────────
     logger.info("[debate] Running Judge agent for claim %s", cid)
-    model, api_key = get_llm_config()
+    model, api_key, api_base = get_llm_config()
     loop = asyncio.get_event_loop()
 
     temporal_note = (
@@ -196,6 +197,7 @@ Respond with ONLY valid JSON (no markdown). You MUST include your reflection bef
                     model=model,
                     messages=[{"role": "user", "content": judge_prompt}],
                     api_key=api_key,
+                    **(({"api_base": api_base}) if api_base else {}),
                     temperature=0.1,
                     max_tokens=800,
                 ),
@@ -210,7 +212,7 @@ Respond with ONLY valid JSON (no markdown). You MUST include your reflection bef
         verdict = parsed.get("verdict", "UNVERIFIABLE")
         confidence = int(parsed.get("confidence", 50))
         reasoning = parsed.get("reasoning", "")
-        key_idx = parsed.get("key_indices", [1, 2])
+        key_idx = [int(x) for x in parsed.get("key_indices", [1, 2]) if str(x).isdigit()]
 
         # Apply post-debate caps for temporal/ambiguous claims
         if is_temporal and verdict in ("TRUE", "PARTIALLY_TRUE"):
@@ -276,3 +278,4 @@ Respond with ONLY valid JSON (no markdown). You MUST include your reflection bef
             "ambiguous": is_ambiguous, "temporal": is_temporal,
             "debate": {"support": support_arg, "oppose": oppose_arg, "judge_reasoning": ""},
         }
+

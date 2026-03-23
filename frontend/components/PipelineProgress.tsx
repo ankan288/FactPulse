@@ -7,6 +7,7 @@ const STEPS = [
   { id: "searching", label: "Searching evidence" },
   { id: "verifying", label: "Cross-checking sources" },
   { id: "detecting", label: "Scanning AI writing signals" },
+  { id: "media_detecting", label: "Scanning image authenticity" },
   { id: "done", label: "Generating verification report" },
 ];
 

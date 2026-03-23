@@ -2,6 +2,8 @@
 
 import { motion } from "framer-motion";
 
+import type { FusionReport } from "@/lib/api";
+
 interface Summary {
   total: number;
   true: number;
@@ -11,9 +13,12 @@ interface Summary {
   overallScore: number;
 }
 
-interface Props { summary: Summary; }
+interface Props { 
+  summary: Summary;
+  fusion?: FusionReport;
+}
 
-export default function AccuracyReport({ summary }: Props) {
+export default function AccuracyReport({ summary, fusion }: Props) {
   const segments = [
     { key: "true",        label: "True",           color: "#22c55e", value: summary.true },
     { key: "false",       label: "False",           color: "#ef4444", value: summary.false },
@@ -52,13 +57,23 @@ export default function AccuracyReport({ summary }: Props) {
         <div style={{ textAlign: "center" }}>
           <div style={{
             fontSize: "36px", fontWeight: 800, fontFamily: "'Sora', sans-serif",
-            color: scoreColor, lineHeight: 1,
+            color: fusion ? (fusion.unified_confidence >= 75 ? "#22c55e" : fusion.unified_confidence >= 45 ? "#f59e0b" : "#ef4444") : scoreColor,
+            lineHeight: 1,
           }}>
-            {summary.overallScore}
+            {fusion ? fusion.unified_confidence : summary.overallScore}
           </div>
-          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: 4 }}>{scoreLabel}</div>
+          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: 4 }}>
+            {fusion ? fusion.final_verdict.replace(/_/g, " ") : scoreLabel}
+          </div>
         </div>
       </div>
+      
+      {/* Fusion Explanation */}
+      {fusion && (
+        <div style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.5, background: "rgba(255,255,255,0.03)", padding: "12px", borderRadius: "6px" }}>
+          {fusion.explanation}
+        </div>
+      )}
 
       {/* Stacked bar */}
       <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", height: 12 }}>

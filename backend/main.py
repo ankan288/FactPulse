@@ -16,6 +16,8 @@ from services.scraper import ScraperException, scrape_url
 from services.searcher import search_evidence
 from services.verifier import verify_claim
 from services.debate_verifier import debate_verify
+from services.media_detector import detect_media
+from services.fusion import generate_fusion_report
 
 load_dotenv()
 
@@ -71,18 +73,20 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
         text = request.text
 
         # ── Fetch article if URL provided ──────────────────────────────────
+        scraped_images = []
         if not text and request.url:
             yield emit("status", {"message": "Fetching article from URL…"})
             try:
                 scraped = await scrape_url(str(request.url))
                 text = scraped["text"]
+                scraped_images = scraped.get("images", [])
                 yield emit("status", {"message": f"Fetched: {scraped.get('title', 'Article')}"})
             except ScraperException as e:
                 yield emit("error", {"message": str(e)})
                 return
 
-        if not text or len(text.strip()) < 5:
-            yield emit("error", {"message": "Input text is too short to analyse. Please provide at least 5 characters."})
+        if not text or len(text.strip()) < 3:
+            yield emit("error", {"message": "Input text is too short to analyse. Please provide at least 3 characters."})
             return
 
         # ── Step 1: Extract claims ─────────────────────────────────────────
@@ -170,18 +174,33 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
         except Exception:
             ai_result = {"score": 50, "label": "AI_ASSISTED", "signals": []}
         yield emit("ai_detection", ai_result)
+        
+        # ── AI media detection ─────────────────────────────────────────────
+        media_reports = []
+        if scraped_images:
+            yield emit("media_detecting", {"message": f"Analysing {len(scraped_images)} images for synthetic manipulation…"})
+            try:
+                media_reports = await detect_media(scraped_images)
+                yield emit("media_results", {"reports": media_reports})
+            except Exception as e:
+                yield emit("error", {"message": f"Media detection failed: {e}"})
 
-        # ── Summary ────────────────────────────────────────────────────────
+        # ── Summary & Fusion ───────────────────────────────────────────────
         total = len(claims)
+        text_summary = {
+            "total": total,
+            "true": stats["true"],
+            "false": stats["false"],
+            "partial": stats["partial"],
+            "unverifiable": stats["unverifiable"],
+            "overallScore": round(stats["total_confidence"] / total) if total else 0,
+        }
+        
+        fusion_report = generate_fusion_report(text_summary, media_reports)
+        
         yield emit("done", {
-            "summary": {
-                "total": total,
-                "true": stats["true"],
-                "false": stats["false"],
-                "partial": stats["partial"],
-                "unverifiable": stats["unverifiable"],
-                "overallScore": round(stats["total_confidence"] / total) if total else 0,
-            }
+            "summary": text_summary,
+            "fusion": fusion_report
         })
 
     except Exception as e:

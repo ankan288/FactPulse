@@ -11,6 +11,7 @@ import ClaimCard from "@/components/ClaimCard";
 import type { Claim } from "@/components/ClaimCard";
 import AccuracyReport from "@/components/AccuracyReport";
 import AIDetectionBadge from "@/components/AIDetectionBadge";
+import MediaDetectionReport from "@/components/MediaDetectionReport";
 import ProfileDropdown from "@/components/ProfileDropdown";
 import Plasma from "@/components/Plasma";
 import LiquidEther from "@/components/LiquidEther";
@@ -20,6 +21,8 @@ import {
   type ResultEvent,
   type AIDetectionEvent,
   type DoneEvent,
+  type MediaReport,
+  type FusionReport,
 } from "@/lib/api";
 
 type AppState = "input" | "running" | "done" | "error";
@@ -39,6 +42,8 @@ export default function Dashboard() {
   const [processedCount,setProcessedCount]= useState(0);
   const [summary,       setSummary]       = useState<Summary | null>(null);
   const [aiResult,      setAiResult]      = useState<AIResult  | null>(null);
+  const [mediaReports,  setMediaReports]  = useState<MediaReport[]>([]);
+  const [fusionReport,  setFusionReport]  = useState<FusionReport | null>(null);
   const [errorMsg,      setErrorMsg]      = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
@@ -47,7 +52,8 @@ export default function Dashboard() {
       case "status":
       case "extracting":
       case "detecting":
-        setCurrentStep(evt.step === "extracting" ? "extracting" : evt.step === "detecting" ? "detecting" : "status");
+      case "media_detecting":
+        setCurrentStep(evt.step === "extracting" ? "extracting" : evt.step === "detecting" ? "detecting" : evt.step === "media_detecting" ? "media_detecting" : "status");
         setStatusMessage(evt.message);
         break;
       case "claims_found":
@@ -77,9 +83,15 @@ export default function Dashboard() {
         setAiResult({ score: a.score, label: a.label, signals: a.signals });
         break;
       }
+      case "media_results":
+        if ("reports" in evt) {
+          setMediaReports(evt.reports);
+        }
+        break;
       case "done": {
         const d = evt as DoneEvent;
         setSummary(d.summary);
+        setFusionReport(d.fusion);
         setCurrentStep("done");
         setStatusMessage("Analysis complete!");
         setAppState("done");
@@ -96,7 +108,7 @@ export default function Dashboard() {
     if (!inputValue.trim() && !selectedFile) return;
     abortRef.current = new AbortController();
     setAppState("running");
-    setClaims([]); setSummary(null); setAiResult(null);
+    setClaims([]); setSummary(null); setAiResult(null); setMediaReports([]); setFusionReport(null);
     setErrorMsg(""); setCurrentStep("extracting");
     setStatusMessage("Starting pipeline…"); setProcessedCount(0);
     try {
@@ -127,7 +139,7 @@ export default function Dashboard() {
 
   const handleReset = () => {
     setAppState("input");
-    setClaims([]); setSummary(null); setAiResult(null);
+    setClaims([]); setSummary(null); setAiResult(null); setMediaReports([]); setFusionReport(null);
     setErrorMsg(""); setCurrentStep(""); setInputValue("");
   };
 
@@ -301,8 +313,15 @@ export default function Dashboard() {
               {/* Accuracy report (sticky when done) */}
               {appState === "done" && summary && (
                 <motion.div style={{ position: "sticky", top: 12, zIndex: 10, marginBottom: 20 }} initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-                  <AccuracyReport summary={summary} />
+                  <AccuracyReport summary={summary} fusion={fusionReport || undefined} />
                 </motion.div>
+              )}
+
+              {/* Media report */}
+              {mediaReports.length > 0 && (
+                <div style={{ marginBottom: 24 }}>
+                  <MediaDetectionReport reports={mediaReports} />
+                </div>
               )}
 
               {/* Claim cards */}

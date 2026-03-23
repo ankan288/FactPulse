@@ -30,6 +30,25 @@ export interface AIDetectionEvent {
   stylometricFeatures: Record<string, number>;
 }
 
+export interface FusionReport {
+  final_verdict: string;
+  unified_confidence: number;
+  explanation: string;
+  media_stats: {
+    total: number;
+    ai_generated: number;
+    real: number;
+  };
+}
+
+export interface MediaReport {
+  url: string;
+  ai_probability: number;
+  label: string;
+  reasoning: string;
+  caption: string;
+}
+
 export interface DoneEvent {
   step: "done";
   summary: {
@@ -40,10 +59,12 @@ export interface DoneEvent {
     unverifiable: number;
     overallScore: number;
   };
+  fusion: FusionReport;
 }
 
 export type PipelineEvent =
-  | { step: "status" | "extracting" | "detecting"; message: string }
+  | { step: "status" | "extracting" | "detecting" | "media_detecting"; message: string }
+  | { step: "media_results"; reports: MediaReport[] }
   | { step: "claims_found"; count: number }
   | { step: "searching"; claimId: number; query: string }
   | { step: "verifying"; claimId: number }

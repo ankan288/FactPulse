@@ -14,16 +14,17 @@ LLM_TIMEOUT = 20.0
 
 
 def get_llm_config() -> tuple:
-    """Return (model_name, api_key) based on available environment variables.
-    Shared by verifier.py and debate_verifier.py to avoid duplication.
+    """Return (model_name, api_key, api_base).
+    Priority: NVIDIA NIM → Groq.
+    NVIDIA has far higher rate limits; Groq is the fallback.
     """
-    gemini_key = os.getenv("GEMINI_API_KEY")
+    nvidia_key = os.getenv("NVIDIA_API_KEY")
     groq_key = os.getenv("GROQ_API_KEY")
-    if gemini_key:
-        return "gemini/gemini-1.5-pro-latest", gemini_key
+    if nvidia_key:
+        return "openai/meta/llama-3.1-70b-instruct", nvidia_key, "https://integrate.api.nvidia.com/v1"
     if groq_key:
-        return "groq/llama-3.3-70b-versatile", groq_key
-    raise ValueError("Neither GEMINI_API_KEY nor GROQ_API_KEY is configured.")
+        return "groq/llama-3.3-70b-versatile", groq_key, None
+    raise ValueError("No LLM API key configured. Set NVIDIA_API_KEY or GROQ_API_KEY.")
 
 
 def _extract_numbers(text: str) -> List[float]:
@@ -181,7 +182,7 @@ Respond with ONLY valid JSON (no markdown). You MUST include the reflection step
   "key_indices": [<1-5>]
 }}"""
 
-    model, api_key = get_llm_config()
+    model, api_key, api_base = get_llm_config()
     loop = asyncio.get_event_loop()
 
     try:
@@ -192,6 +193,7 @@ Respond with ONLY valid JSON (no markdown). You MUST include the reflection step
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     api_key=api_key,
+                    **(({"api_base": api_base}) if api_base else {}),
                     temperature=0.1,
                     max_tokens=800,
                 ),
@@ -207,7 +209,7 @@ Respond with ONLY valid JSON (no markdown). You MUST include the reflection step
         verdict = parsed.get("verdict", "UNVERIFIABLE")
         confidence = int(parsed.get("confidence", 50))
         reasoning = parsed.get("reasoning", "")
-        key_idx = parsed.get("key_indices", [1, 2])
+        key_idx = [int(x) for x in parsed.get("key_indices", [1, 2]) if str(x).isdigit()]
 
         # ── Apply penalties & caps ───────────────────────────────────────────
         if rule["penalty"]:
