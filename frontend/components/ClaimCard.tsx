@@ -31,7 +31,12 @@ interface Claim {
   result?: ClaimResult;
 }
 
-interface Props { claim: Claim; index: number; }
+interface Props {
+  claim: Claim;
+  index: number;
+  isHovered?: boolean;
+  onHover?: (id: number | null) => void;
+}
 
 const VERDICT_META = {
   TRUE:            { label: "True",           icon: "✓", cls: "verdict-true" },
@@ -40,17 +45,196 @@ const VERDICT_META = {
   UNVERIFIABLE:    { label: "Unverifiable",   icon: "?", cls: "verdict-none" },
 };
 
-export default function ClaimCard({ claim, index }: Props) {
+// Evidence snippet preview component with expandable functionality
+function EvidenceSnippetPreview({ citations }: { citations: Citation[] }) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+
+  if (citations.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: "14px" }}>
+      <p style={{
+        fontSize: "11px",
+        fontWeight: 700,
+        color: "var(--text-muted)",
+        textTransform: "uppercase",
+        letterSpacing: "0.05em",
+        marginBottom: "10px"
+      }}>
+        Evidence Snippets
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+        {citations.map((citation, i) => {
+          const isExpanded = expandedIndex === i;
+          const domain = (() => {
+            try {
+              return new URL(citation.url).hostname.replace("www.", "");
+            } catch {
+              return citation.url;
+            }
+          })();
+
+          const trustColor = citation.trustScore >= 70 ? "#22c55e" :
+                            citation.trustScore >= 40 ? "#f59e0b" : "#ef4444";
+
+          return (
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05 }}
+              style={{
+                background: "rgba(0,0,0,0.3)",
+                border: `1px solid ${isExpanded ? trustColor + "50" : "var(--border)"}`,
+                borderRadius: "10px",
+                overflow: "hidden",
+                transition: "all 0.2s ease",
+              }}
+            >
+              {/* Header */}
+              <div
+                onClick={() => setExpandedIndex(isExpanded ? null : i)}
+                style={{
+                  padding: "10px 14px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  cursor: "pointer",
+                  background: isExpanded ? "rgba(255,255,255,0.02)" : "transparent",
+                }}
+              >
+                {/* Trust indicator */}
+                <div style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: trustColor,
+                  flexShrink: 0,
+                }} />
+
+                {/* Source info */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}>
+                    {citation.title || domain}
+                  </p>
+                  <p style={{
+                    fontSize: "11px",
+                    color: "var(--text-muted)",
+                    marginTop: "2px",
+                  }}>
+                    {domain} • Trust: {citation.trustScore}%
+                  </p>
+                </div>
+
+                {/* Expand/collapse arrow */}
+                <span style={{
+                  fontSize: "10px",
+                  color: "var(--text-muted)",
+                  transition: "transform 0.2s",
+                  transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)",
+                }}>
+                  ▼
+                </span>
+              </div>
+
+              {/* Expanded content */}
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <div style={{
+                      padding: "0 14px 14px",
+                      borderTop: "1px solid var(--border)",
+                    }}>
+                      {/* Snippet preview */}
+                      <div style={{
+                        marginTop: "12px",
+                        padding: "12px",
+                        background: "rgba(139, 92, 246, 0.05)",
+                        borderRadius: "8px",
+                        borderLeft: `3px solid ${trustColor}`,
+                      }}>
+                        <p style={{
+                          fontSize: "13px",
+                          lineHeight: 1.7,
+                          color: "var(--text-secondary)",
+                          fontStyle: "italic",
+                        }}>
+                          "{citation.snippet}"
+                        </p>
+                      </div>
+
+                      {/* Link to source */}
+                      <a
+                        href={citation.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          marginTop: "10px",
+                          padding: "6px 12px",
+                          borderRadius: "6px",
+                          background: "rgba(255,255,255,0.05)",
+                          border: "1px solid var(--border)",
+                          color: "var(--accent-cyan)",
+                          fontSize: "12px",
+                          textDecoration: "none",
+                          transition: "all 0.15s",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+                          e.currentTarget.style.borderColor = "var(--accent-cyan)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+                          e.currentTarget.style.borderColor = "var(--border)";
+                        }}
+                      >
+                        View Source ↗
+                      </a>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export default function ClaimCard({ claim, index, isHovered, onHover }: Props) {
   const [expanded, setExpanded] = useState(false);
   const meta = claim.result ? VERDICT_META[claim.result.verdict] : null;
 
   return (
     <motion.div
+      id={`claim-${claim.id}`}
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, delay: index * 0.04 }}
       className="glass"
-      style={{ overflow: "hidden" }}
+      style={{
+        overflow: "hidden",
+        boxShadow: isHovered ? "0 0 0 2px rgba(139, 92, 246, 0.4)" : "none",
+        transition: "box-shadow 0.2s ease",
+      }}
+      onMouseEnter={() => onHover?.(claim.id)}
+      onMouseLeave={() => onHover?.(null)}
     >
       {/* Header row */}
       <div
@@ -64,11 +248,14 @@ export default function ClaimCard({ claim, index }: Props) {
         {/* Index badge */}
         <div style={{
           width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
-          background: "var(--bg-mid)", border: "1px solid var(--border)",
+          background: isHovered ? "rgba(139, 92, 246, 0.2)" : "var(--bg-mid)",
+          border: isHovered ? "1px solid rgba(139, 92, 246, 0.4)" : "1px solid var(--border)",
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "12px", fontWeight: 700, color: "var(--text-muted)",
+          fontSize: "12px", fontWeight: 700,
+          color: isHovered ? "#a78bfa" : "var(--text-muted)",
+          transition: "all 0.2s ease",
         }}>
-          {index + 1}
+          {claim.id}
         </div>
 
         {/* Claim text */}
@@ -144,9 +331,41 @@ export default function ClaimCard({ claim, index }: Props) {
             <div style={{ padding: "18px 20px 20px", display: "flex", flexDirection: "column", gap: "14px" }}>
               {/* Reasoning */}
               <div>
-                <p style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                  Reasoning
-                </p>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <p style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Reasoning
+                  </p>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const originalText = document.getElementById("original-text-section");
+                      if (originalText) {
+                        originalText.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }
+                    }}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: "6px",
+                      background: "rgba(139, 92, 246, 0.1)",
+                      border: "1px solid rgba(139, 92, 246, 0.3)",
+                      color: "#a78bfa",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      transition: "all 0.15s",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "rgba(139, 92, 246, 0.2)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "rgba(139, 92, 246, 0.1)";
+                    }}
+                  >
+                    ↑ View in Context
+                  </button>
+                </div>
                 <p style={{ fontSize: "13px", lineHeight: 1.7, color: "var(--text-secondary)" }}>
                   {claim.result.reasoning}
                 </p>
@@ -166,11 +385,14 @@ export default function ClaimCard({ claim, index }: Props) {
                 </div>
               )}
 
-              {/* Citations */}
+              {/* Evidence Snippet Preview (New!) */}
+              <EvidenceSnippetPreview citations={claim.result.citations} />
+
+              {/* Quick source links */}
               {claim.result.citations.length > 0 && (
                 <div>
                   <p style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
-                    Sources
+                    Quick Links
                   </p>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                     {claim.result.citations.map((c, i) => (

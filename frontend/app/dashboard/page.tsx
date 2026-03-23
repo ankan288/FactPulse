@@ -9,6 +9,7 @@ import InputPanel from "@/components/InputPanel";
 import PipelineProgress from "@/components/PipelineProgress";
 import ClaimCard from "@/components/ClaimCard";
 import type { Claim } from "@/components/ClaimCard";
+import OriginalText from "@/components/OriginalText";
 import AccuracyReport from "@/components/AccuracyReport";
 import AIDetectionBadge from "@/components/AIDetectionBadge";
 import MediaDetectionReport from "@/components/MediaDetectionReport";
@@ -44,6 +45,8 @@ export default function Dashboard() {
   const [mediaReports,  setMediaReports]  = useState<MediaReport[]>([]);
   const [fusionReport,  setFusionReport]  = useState<FusionReport | null>(null);
   const [errorMsg,      setErrorMsg]      = useState("");
+  const [originalText,  setOriginalText]  = useState("");
+  const [hoveredClaimId, setHoveredClaimId] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const handleEvent = useCallback((evt: PipelineEvent) => {
@@ -54,6 +57,9 @@ export default function Dashboard() {
       case "media_detecting":
         setCurrentStep(evt.step === "extracting" ? "extracting" : evt.step === "detecting" ? "detecting" : evt.step === "media_detecting" ? "media_detecting" : "status");
         setStatusMessage(evt.message);
+        break;
+      case "text_extracted":
+        setOriginalText(evt.text);
         break;
       case "claims_found":
         setStatusMessage(`Found ${evt.count} verifiable claims`);
@@ -118,8 +124,13 @@ export default function Dashboard() {
         payload.append("file", selectedFile);
         payload.append("type", inputMode); // image, video, or audio
       } else {
-        // For text/URL
-        payload = inputMode === "text" ? { text: inputValue } : { url: inputValue };
+        // Auto-detect: if value starts with http/https/www treat as URL
+        const isUrl = /^https?:\/\/|^www\./i.test(inputValue.trim());
+        payload = isUrl ? { url: inputValue.trim() } : { text: inputValue };
+        // Store original text for direct text input (URL text will come from backend)
+        if (!isUrl) {
+          setOriginalText(inputValue);
+        }
       }
       await streamVerify(payload, handleEvent, abortRef.current.signal);
     } catch (e: unknown) {
@@ -139,7 +150,8 @@ export default function Dashboard() {
   const handleReset = () => {
     setAppState("input");
     setClaims([]); setSummary(null); setAiResult(null); setMediaReports([]); setFusionReport(null);
-    setErrorMsg(""); setCurrentStep(""); setInputValue("");
+    setErrorMsg(""); setCurrentStep(""); setInputValue(""); setOriginalText("");
+    setHoveredClaimId(null);
   };
 
   const isHero   = appState === "input";
@@ -316,6 +328,22 @@ export default function Dashboard() {
                 </motion.div>
               )}
 
+              {/* Original text with highlighted claims */}
+              {originalText && claims.length > 0 && (
+                <OriginalText
+                  originalText={originalText}
+                  claims={claims.map(c => ({
+                    id: c.id,
+                    claim: c.claim,
+                    context: c.context,
+                    verdict: c.result?.verdict,
+                    confidence: c.result?.confidence,
+                  }))}
+                  hoveredClaimId={hoveredClaimId}
+                  onClaimHover={setHoveredClaimId}
+                />
+              )}
+
               {/* Media report */}
               {mediaReports.length > 0 && (
                 <div style={{ marginBottom: 24 }}>
@@ -326,7 +354,15 @@ export default function Dashboard() {
               {/* Claim cards */}
               {claims.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
-                  {claims.map((claim, i) => <ClaimCard key={claim.id} claim={claim} index={i} />)}
+                  {claims.map((claim, i) => (
+                    <ClaimCard
+                      key={claim.id}
+                      claim={claim}
+                      index={i}
+                      isHovered={hoveredClaimId === claim.id}
+                      onHover={setHoveredClaimId}
+                    />
+                  ))}
                 </div>
               )}
 

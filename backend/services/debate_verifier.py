@@ -7,32 +7,126 @@ Architecture:
   Judge Agent       → weighs both arguments + raw evidence → final verdict
 
 Only called for low-confidence claims (< DEBATE_CONFIDENCE_THRESHOLD).
-All three LLM calls reuse the same API key and model as the main verifier.
-Each call is wrapped in asyncio.wait_for(timeout=20s) to prevent hangs.
+Uses cascading fallback through available LLM providers.
+Each call is wrapped in asyncio.wait_for(timeout=25s) to prevent hangs.
 """
 
 import asyncio
 import json
 import logging
+import os
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
 import litellm
 
-from services.verifier import get_llm_config, LLM_TIMEOUT
+from utils.llm_retry import retry_on_rate_limit, RateLimitError
 
 logger = logging.getLogger(__name__)
+
+# Timeout (seconds) for LLM calls
+LLM_TIMEOUT = 25.0
+
+
+def _get_available_providers() -> List[Tuple[str, str, Optional[str]]]:
+    """
+    Get list of available LLM providers based on configured API keys.
+    Returns list of tuples: (model, api_key, api_base)
+    """
+    providers = []
+
+    # 1. NVIDIA NIM API (generous free tier)
+    nvidia_key = os.getenv("NVIDIA_API_KEY")
+    if nvidia_key:
+        providers.append((
+            "openai/meta/llama-3.1-70b-instruct",
+            nvidia_key,
+            "https://integrate.api.nvidia.com/v1"
+        ))
+
+    # 2. Groq (fast but limited)
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        providers.append((
+            "groq/llama-3.3-70b-versatile",
+            groq_key,
+            None
+        ))
+
+    # 3. Together.ai
+    together_key = os.getenv("TOGETHER_API_KEY")
+    if together_key:
+        providers.append((
+            "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            together_key,
+            None
+        ))
+
+    # 4. Google Gemini
+    google_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if google_key:
+        providers.append((
+            "gemini/gemini-1.5-flash",
+            google_key,
+            None
+        ))
+
+    return providers
+
+
+async def _call_provider(
+    model: str,
+    api_key: str,
+    api_base: Optional[str],
+    prompt: str,
+    max_tokens: int = 600
+) -> Optional[str]:
+    """Call a single LLM provider with retry logic."""
+    @retry_on_rate_limit(max_attempts=2, base_delay=1.5)
+    async def _make_request():
+        return await litellm.acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            **({"api_base": api_base} if api_base else {}),
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = await asyncio.wait_for(_make_request(), timeout=LLM_TIMEOUT)
+        return response.choices[0].message.content.strip()
+    except (asyncio.TimeoutError, RateLimitError) as e:
+        logger.warning(f"Provider {model} failed: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Provider {model} error: {e}")
+        return None
+
+
+async def _call_with_fallback(prompt: str, max_tokens: int = 600) -> Optional[str]:
+    """Try each provider in order until one succeeds."""
+    providers = _get_available_providers()
+
+    if not providers:
+        logger.error("No LLM providers configured")
+        return None
+
+    for model, api_key, api_base in providers:
+        raw = await _call_provider(model, api_key, api_base, prompt, max_tokens)
+        if raw:
+            return raw
+        logger.warning(f"Provider {model} failed, trying next...")
+
+    return None
 
 
 # ── Internal agent helpers ──────────────────────────────────────────────────
 
-async def _run_agent(role_prompt: str, claim_text: str, ev_block: str) -> str:
+async def _run_agent(role_prompt: str, claim_text: str, ev_block: str) -> tuple:
     """Run a single debate agent and return its raw text argument.
     Falls back to empty string on timeout or error.
     """
-    model, api_key, api_base = get_llm_config()
-    loop = asyncio.get_event_loop()
-
     prompt = f"""{role_prompt}
 
 CLAIM: "{claim_text}"
@@ -49,31 +143,18 @@ Respond with ONLY valid JSON. You MUST include your reflection before the final 
   "key_indices": [<1-5>]
 }}"""
 
+    raw = await _call_with_fallback(prompt, max_tokens=600)
+
+    if not raw:
+        return "", []
+
     try:
-        resp = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: litellm.completion(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    api_key=api_key,
-                    **(({"api_base": api_base}) if api_base else {}),
-                    temperature=0.2,
-                    max_tokens=600,
-                ),
-            ),
-            timeout=LLM_TIMEOUT,
-        )
-        raw = resp.choices[0].message.content.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
         return parsed.get("argument", ""), [int(x) for x in parsed.get("key_indices", []) if str(x).isdigit()]
-    except asyncio.TimeoutError:
-        logger.warning("Debate agent timed out.")
-        return "", []
-    except Exception as e:
-        logger.error("Debate agent error: %s", e)
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error("Debate agent parsing error: %s", e)
         return "", []
 
 
@@ -134,17 +215,15 @@ async def debate_verify(claim: Dict, evidence: List[Dict]) -> Dict:
     # ── Step 1: Support agent ────────────────────────────────────────────────
     logger.info("[debate] Running Support agent for claim %s", cid)
     support_arg, support_indices = await _support_agent(claim_text, ev_block)
-    await asyncio.sleep(0.5)   # Spread Groq API calls to avoid rate limiting
+    await asyncio.sleep(1.5)  # Spread API calls to avoid rate limiting
 
     # ── Step 2: Oppose agent ─────────────────────────────────────────────────
     logger.info("[debate] Running Oppose agent for claim %s", cid)
     oppose_arg, oppose_indices = await _oppose_agent(claim_text, ev_block)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.5)
 
     # ── Step 3: Judge agent ──────────────────────────────────────────────────
     logger.info("[debate] Running Judge agent for claim %s", cid)
-    model, api_key, api_base = get_llm_config()
-    loop = asyncio.get_event_loop()
 
     temporal_note = (
         "\n⚠️ TEMPORAL NOTE: This claim refers to a current state. "
@@ -189,22 +268,21 @@ Respond with ONLY valid JSON (no markdown). You MUST include your reflection bef
   "key_indices": [<1-5>]
 }}"""
 
+    raw = await _call_with_fallback(judge_prompt, max_tokens=800)
+
+    if not raw:
+        logger.error("[debate] All providers failed for Judge for claim %s", cid)
+        return {
+            "claimId": cid, "claim": claim_text,
+            "verdict": "UNVERIFIABLE", "confidence": 15,
+            "reasoning": "Debate could not complete — all verification services are currently unavailable.",
+            "citations": [{"title": e["title"], "url": e["url"], "snippet": e["snippet"][:200], "trustScore": e.get("trust_score", 50)} for e in evidence[:2]],
+            "conflicting": False, "ruleFlags": [],
+            "ambiguous": is_ambiguous, "temporal": is_temporal,
+            "debate": {"support": support_arg, "oppose": oppose_arg, "judge_reasoning": ""},
+        }
+
     try:
-        resp = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: litellm.completion(
-                    model=model,
-                    messages=[{"role": "user", "content": judge_prompt}],
-                    api_key=api_key,
-                    **(({"api_base": api_base}) if api_base else {}),
-                    temperature=0.1,
-                    max_tokens=800,
-                ),
-            ),
-            timeout=LLM_TIMEOUT,
-        )
-        raw = resp.choices[0].message.content.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         parsed = json.loads(raw)
@@ -256,19 +334,8 @@ Respond with ONLY valid JSON (no markdown). You MUST include your reflection bef
             },
         }
 
-    except asyncio.TimeoutError:
-        logger.error("[debate] Judge timed out for claim %s", cid)
-        return {
-            "claimId": cid, "claim": claim_text,
-            "verdict": "UNVERIFIABLE", "confidence": 15,
-            "reasoning": "Debate judge timed out — the AI service did not respond in time.",
-            "citations": [{"title": e["title"], "url": e["url"], "snippet": e["snippet"][:200], "trustScore": e.get("trust_score", 50)} for e in evidence[:2]],
-            "conflicting": False, "ruleFlags": [],
-            "ambiguous": is_ambiguous, "temporal": is_temporal,
-            "debate": {"support": support_arg, "oppose": oppose_arg, "judge_reasoning": ""},
-        }
     except (json.JSONDecodeError, Exception) as e:
-        logger.error("[debate] Judge failed for claim %s: %s", cid, e)
+        logger.error("[debate] Judge parsing failed for claim %s: %s", cid, e, exc_info=True)
         return {
             "claimId": cid, "claim": claim_text,
             "verdict": "UNVERIFIABLE", "confidence": 20,
@@ -278,4 +345,3 @@ Respond with ONLY valid JSON (no markdown). You MUST include your reflection bef
             "ambiguous": is_ambiguous, "temporal": is_temporal,
             "debate": {"support": support_arg, "oppose": oppose_arg, "judge_reasoning": ""},
         }
-

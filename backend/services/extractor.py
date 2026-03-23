@@ -3,14 +3,16 @@ import json
 import logging
 import os
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
 import litellm
+
+from utils.llm_retry import retry_on_rate_limit, RateLimitError
 
 logger = logging.getLogger(__name__)
 
 # Timeout (seconds) for a single LLM call — prevents hanging the pipeline
-LLM_TIMEOUT = 20.0
+LLM_TIMEOUT = 25.0
 
 # Patterns that indicate a claim is time-sensitive / temporal
 _TEMPORAL_PATTERNS = re.compile(
@@ -26,9 +28,98 @@ def _is_temporal(claim: str) -> bool:
     return bool(_TEMPORAL_PATTERNS.search(claim))
 
 
-async def extract_claims(text: str) -> List[Dict]:
-    """Extract verifiable atomic claims from text using Gemini Flash (or Groq fallback).
+def _get_available_providers() -> List[Tuple[str, str, Optional[str]]]:
+    """
+    Get list of available LLM providers based on configured API keys.
+    Returns list of tuples: (model, api_key, api_base)
+    Providers are ordered by preference (fastest/cheapest first).
+    """
+    providers = []
 
+    # 1. NVIDIA NIM API (generous free tier - 1000 requests/day)
+    nvidia_key = os.getenv("NVIDIA_API_KEY")
+    if nvidia_key:
+        providers.append((
+            "openai/meta/llama-3.1-70b-instruct",
+            nvidia_key,
+            "https://integrate.api.nvidia.com/v1"
+        ))
+
+    # 2. Groq (fast but limited - 100k tokens/day on free tier)
+    groq_key = os.getenv("GROQ_API_KEY")
+    if groq_key:
+        providers.append((
+            "groq/llama-3.3-70b-versatile",
+            groq_key,
+            None
+        ))
+
+    # 3. Together.ai (good free tier option)
+    together_key = os.getenv("TOGETHER_API_KEY")
+    if together_key:
+        providers.append((
+            "together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            together_key,
+            None
+        ))
+
+    # 4. OpenRouter (aggregates many providers)
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if openrouter_key:
+        providers.append((
+            "openrouter/meta-llama/llama-3.1-70b-instruct",
+            openrouter_key,
+            None
+        ))
+
+    # 5. Google Gemini (generous free tier)
+    google_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if google_key:
+        providers.append((
+            "gemini/gemini-1.5-flash",
+            google_key,
+            None
+        ))
+
+    return providers
+
+
+async def _call_provider(
+    model: str,
+    api_key: str,
+    api_base: Optional[str],
+    prompt: str
+) -> Optional[str]:
+    """
+    Call a single LLM provider with retry logic.
+    Returns the response content or None if failed.
+    """
+    @retry_on_rate_limit(max_attempts=2, base_delay=1.5)
+    async def _make_request():
+        return await litellm.acompletion(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            api_key=api_key,
+            **({"api_base": api_base} if api_base else {}),
+            temperature=0.1,
+            max_tokens=2000,
+        )
+
+    try:
+        response = await asyncio.wait_for(_make_request(), timeout=LLM_TIMEOUT)
+        return response.choices[0].message.content.strip()
+    except (asyncio.TimeoutError, RateLimitError) as e:
+        logger.warning(f"Provider {model} failed: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Provider {model} error: {e}")
+        return None
+
+
+async def extract_claims(text: str) -> List[Dict]:
+    """Extract verifiable atomic claims from text using available LLM providers.
+
+    Uses cascading fallback: tries each configured provider until one succeeds.
     Each claim is tagged:
     - ambiguous: True if the claim is subjective or hard to verify definitively
     - temporal:  True if the claim references a current state, role, or time-sensitive fact
@@ -61,45 +152,29 @@ Output ONLY a valid JSON array (no markdown fences, no explanation):
 Text:
 {sample}"""
 
-    groq_key = os.getenv("GROQ_API_KEY")
-    nvidia_key = os.getenv("NVIDIA_API_KEY")
+    providers = _get_available_providers()
 
-    if groq_key:
-        model = "groq/llama-3.3-70b-versatile"
-        api_key = groq_key
-        api_base = None
-    elif nvidia_key:
-        model = "openai/meta/llama-3.1-70b-instruct"
-        api_key = nvidia_key
-        api_base = "https://integrate.api.nvidia.com/v1"
-    else:
-        raise ValueError("No LLM API key configured. Set GROQ_API_KEY or NVIDIA_API_KEY.")
-
-    loop = asyncio.get_event_loop()
-
-    try:
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: litellm.completion(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    api_key=api_key,
-                    **({"api_base": api_base} if api_base else {}),
-                    temperature=0.1,
-                    max_tokens=2000,
-                ),
-            ),
-            timeout=LLM_TIMEOUT,
+    if not providers:
+        raise ValueError(
+            "No LLM API key configured. Set one of: NVIDIA_API_KEY, GROQ_API_KEY, "
+            "TOGETHER_API_KEY, OPENROUTER_API_KEY, or GOOGLE_API_KEY"
         )
-    except asyncio.TimeoutError:
-        logger.error("extract_claims timed out after %.0fs — returning empty list", LLM_TIMEOUT)
-        return []
-    except Exception as e:
-        logger.error("extract_claims LLM call failed: %s", e)
+
+    # Try each provider in order until one succeeds
+    raw = None
+    for model, api_key, api_base in providers:
+        logger.info(f"Trying LLM provider: {model}")
+        raw = await _call_provider(model, api_key, api_base, prompt)
+        if raw:
+            logger.info(f"Success with provider: {model}")
+            break
+        logger.warning(f"Provider {model} failed, trying next...")
+
+    if not raw:
+        logger.error("All LLM providers failed for extract_claims")
         return []
 
-    raw = response.choices[0].message.content.strip()
+    # Clean up response
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from typing import AsyncGenerator, Optional
 
@@ -18,10 +19,16 @@ from services.verifier import verify_claim
 from services.debate_verifier import debate_verify
 from services.media_detector import detect_media
 from services.fusion import generate_fusion_report
+from utils.cache import get_cache
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Fact & Claim Verification API", version="2.0.0")
+
+# Initialize cache (works even if Redis is not available)
+claim_cache = get_cache()
 
 # ── Multi-agent debate settings ────────────────────────────────────────────
 # Trigger adversarial debate when initial confidence is below this threshold
@@ -112,23 +119,45 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
 
         for claim in claims:
             cid = claim["id"]
+            claim_text = claim["claim"]
 
-            yield emit("searching", {"claimId": cid, "query": claim["claim"][:100]})
+            # ── Check cache first ──────────────────────────────────────────
+            cached_result = claim_cache.get(claim_text)
+            if cached_result:
+                logger.info("Using cached result for claim %s", cid)
+                # Update claim ID to match current request
+                cached_result["claimId"] = cid
+                yield emit("result", cached_result)
+
+                # Update stats
+                v = cached_result.get("verdict", "UNVERIFIABLE")
+                stats["true"] += v == "TRUE"
+                stats["false"] += v == "FALSE"
+                stats["partial"] += v == "PARTIALLY_TRUE"
+                stats["unverifiable"] += v == "UNVERIFIABLE"
+                stats["total_confidence"] += cached_result.get("confidence", 0)
+                await asyncio.sleep(0.05)
+                continue
+
+            # ── Not in cache - proceed with verification ──────────────────
+            yield emit("searching", {"claimId": cid, "query": claim_text[:100]})
             try:
-                raw_evidence = await search_evidence(claim["claim"])
-            except Exception:
+                raw_evidence = await search_evidence(claim_text)
+            except Exception as e:
+                logger.error("Evidence search failed for claim %s: %s", cid, e)
                 raw_evidence = []
 
-            ranked = rank_evidence(claim["claim"], raw_evidence, temporal=claim.get("temporal", False))
+            ranked = rank_evidence(claim_text, raw_evidence, temporal=claim.get("temporal", False))
 
             # ── Fast path: single-agent verification ──────────────────────
             yield emit("verifying", {"claimId": cid})
             try:
                 result = await verify_claim(claim, ranked)
             except Exception as e:
+                logger.error("Verification failed for claim %s: %s", cid, e, exc_info=True)
                 result = {
                     "claimId": cid,
-                    "claim": claim["claim"],
+                    "claim": claim_text,
                     "verdict": "UNVERIFIABLE",
                     "confidence": 0,
                     "reasoning": f"Verification failed: {e}",
@@ -154,8 +183,15 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
                     result = debate_result
                 except Exception as e:
                     # Keep the single-agent result if debate itself fails
+                    logger.error("Debate failed for claim %s: %s", cid, e, exc_info=True)
                     result["reasoning"] += f" (Debate escalation failed: {e})"
                 debate_count += 1
+
+            # ── Cache the result ──────────────────────────────────────────
+            # Cache for 24 hours (86400 seconds)
+            # Temporal claims get shorter TTL (6 hours) to stay fresh
+            ttl = 21600 if claim.get("temporal", False) else 86400
+            claim_cache.set(claim_text, result, ttl=ttl)
 
             yield emit("result", result)
 
@@ -171,9 +207,15 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
         yield emit("detecting", {"message": "Analysing text for AI authorship…"})
         try:
             ai_result = await detect_ai_text(text)
-        except Exception:
-            ai_result = {"score": 50, "label": "AI_ASSISTED", "signals": []}
-        yield emit("ai_detection", ai_result)
+            yield emit("ai_detection", ai_result)
+        except Exception as e:
+            logger.error("AI detection failed: %s", e, exc_info=True)
+            yield emit("error", {
+                "stage": "ai_detection",
+                "message": f"AI authorship analysis unavailable: {str(e)}"
+            })
+            # Return partial results without AI detection
+            ai_result = None
         
         # ── AI media detection ─────────────────────────────────────────────
         media_reports = []
@@ -183,7 +225,13 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
                 media_reports = await detect_media(scraped_images)
                 yield emit("media_results", {"reports": media_reports})
             except Exception as e:
-                yield emit("error", {"message": f"Media detection failed: {e}"})
+                logger.error("Media detection failed: %s", e, exc_info=True)
+                yield emit("error", {
+                    "stage": "media_detection",
+                    "message": f"Media analysis unavailable: {str(e)}"
+                })
+                # Continue without media reports
+                media_reports = []
 
         # ── Summary & Fusion ───────────────────────────────────────────────
         total = len(claims)

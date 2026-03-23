@@ -64,6 +64,7 @@ export interface DoneEvent {
 
 export type PipelineEvent =
   | { step: "status" | "extracting" | "detecting" | "media_detecting"; message: string }
+  | { step: "text_extracted"; text: string }
   | { step: "media_results"; reports: MediaReport[] }
   | { step: "claims_found"; count: number }
   | { step: "searching"; claimId: number; query: string }
