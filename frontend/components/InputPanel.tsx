@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import { IoArrowForward } from "react-icons/io5";
-import { MdImage, MdVideoLibrary, MdAudioFile } from "react-icons/md";
+import { MdImage, MdVideoLibrary, MdAudioFile, MdPictureAsPdf } from "react-icons/md";
 import { useState, useRef, useEffect } from "react";
 
 // Detect if a string looks like a URL
@@ -15,7 +15,7 @@ function looksLikeUrl(value: string): boolean {
   );
 }
 
-type FileMode = "image" | "video" | "audio";
+type FileMode = "image" | "video" | "audio" | "pdf" | "text";
 
 interface Props {
   inputMode: "text" | "url";
@@ -42,6 +42,7 @@ export default function InputPanel({
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-expand textarea while typing (max 4 lines)
   useEffect(() => {
@@ -72,6 +73,7 @@ export default function InputPanel({
   };
 
   const fileModes: { mode: FileMode; icon: React.ReactNode; label: string; ref: React.RefObject<HTMLInputElement | null>; accept: string }[] = [
+    { mode: "pdf", icon: <MdPictureAsPdf size={18} />, label: "PDF", ref: pdfInputRef, accept: ".pdf" },
     { mode: "image", icon: <MdImage size={18} />, label: "Image", ref: imageInputRef, accept: "image/*" },
     { mode: "video", icon: <MdVideoLibrary size={18} />, label: "Video", ref: videoInputRef, accept: "video/*" },
     { mode: "audio", icon: <MdAudioFile size={18} />, label: "Audio", ref: audioInputRef, accept: "audio/*" },

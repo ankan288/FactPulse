@@ -76,42 +76,86 @@ export type PipelineEvent =
   | DoneEvent;
 
 export async function streamVerify(
-  payload: { text?: string; url?: string },
+  payload: { text?: string; url?: string } | FormData,
   onEvent: (event: PipelineEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/verify`, {
+  let url = `${API_BASE}/api/verify`;
+  let options: RequestInit = {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
     signal,
-  });
+  };
 
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  if (!response.body) throw new Error("No response body");
+  // Handle FormData (file upload) vs JSON
+  if (payload instanceof FormData) {
+    url = `${API_BASE}/api/upload`;
+    options.body = payload;
+    // Don't set Content-Type for FormData - browser will set it with boundary
+  } else {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(payload);
+  }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  try {
+    const response = await fetch(url, options);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    // Handle HTTP errors
+    if (!response.ok) {
+      let errorMsg = `HTTP ${response.status}`;
+      
+      if (response.status === 400) {
+        errorMsg = "Invalid input. Please check your text/URL and try again.";
+      } else if (response.status === 401) {
+        errorMsg = "Unauthorized. Please sign in.";
+      } else if (response.status === 403) {
+        errorMsg = "Access denied.";
+      } else if (response.status === 404) {
+        errorMsg = "Resource not found.";
+      } else if (response.status === 413) {
+        errorMsg = "File too large. Maximum size is 10MB.";
+      } else if (response.status === 429) {
+        errorMsg = "Too many requests. Please wait a moment and try again.";
+      } else if (response.status >= 500) {
+        errorMsg = "Server error. Please try again later.";
+      }
 
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
+      throw new Error(errorMsg);
+    }
 
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        try {
-          const evt = JSON.parse(line.slice(6)) as PipelineEvent;
-          onEvent(evt);
-        } catch {
-          // skip malformed events
+    if (!response.body) throw new Error("No response body");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const evt = JSON.parse(line.slice(6)) as PipelineEvent;
+            onEvent(evt);
+          } catch (e) {
+            console.warn("Failed to parse event:", line, e);
+            // skip malformed events
+          }
         }
       }
     }
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.name === "AbortError") {
+        throw error; // Re-throw AbortError so caller can handle cancellation
+      }
+      throw new Error(error.message || "Network error. Please check your connection.");
+    }
+    throw new Error("Unknown error occurred");
   }
 }
 

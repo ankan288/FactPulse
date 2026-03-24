@@ -14,7 +14,10 @@ import AccuracyReport from "@/components/AccuracyReport";
 import AIDetectionBadge from "@/components/AIDetectionBadge";
 import MediaDetectionReport from "@/components/MediaDetectionReport";
 import ProfileDropdown from "@/components/ProfileDropdown";
+import Preloader from "@/components/Preloader";
 import ColorBends from "@/components/ColorBends";
+import { HoverButton } from "@/components/HoverButton";
+import { Typewriter } from "@/components/Typewriter";
 import {
   streamVerify,
   type PipelineEvent,
@@ -31,6 +34,7 @@ interface AIResult  { score: number; label: "LIKELY_HUMAN" | "AI_ASSISTED" | "LI
 
 export default function Dashboard() {
   const router = useRouter();
+  const [showPreloader,setShowPreloader] = useState(true);
   const [appState,      setAppState]      = useState<AppState>("input");
 
   const [inputMode,     setInputMode]     = useState<"text" | "url">("text");
@@ -48,6 +52,13 @@ export default function Dashboard() {
   const [originalText,  setOriginalText]  = useState("");
   const [hoveredClaimId, setHoveredClaimId] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowPreloader(false);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleEvent = useCallback((evt: PipelineEvent) => {
     switch (evt.step) {
@@ -171,7 +182,9 @@ export default function Dashboard() {
   };
 
   return (
-    <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", backgroundColor: "#000" }}>
+    <>
+      {showPreloader && <Preloader onComplete={() => setShowPreloader(false)} />}
+      <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", backgroundColor: "#000" }}>
 
       {/* ── HERO SECTION ── */}
       <motion.section
@@ -211,7 +224,11 @@ export default function Dashboard() {
 
         {/* Profile Dropdown - Top Right */}
         <div style={{ position: "absolute", top: 32, right: 32, zIndex: 10 }}>
-          <ProfileDropdown username="John Doe" email="john@example.com" />
+          <ProfileDropdown 
+            username="John Doe" 
+            email="john@example.com"
+            status="online"
+          />
         </div>
 
         {/* Hero content */}
@@ -338,6 +355,11 @@ export default function Dashboard() {
                     context: c.context,
                     verdict: c.result?.verdict,
                     confidence: c.result?.confidence,
+                    evidence: c.result?.citations?.map(cit => ({
+                      title: cit.title,
+                      snippet: cit.snippet,
+                      url: cit.url,
+                    })) || [],
                   }))}
                   hoveredClaimId={hoveredClaimId}
                   onClaimHover={setHoveredClaimId}
@@ -375,8 +397,10 @@ export default function Dashboard() {
 
               {/* Reset */}
               {appState === "done" && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ textAlign: "center", paddingTop: 8 }}>
-                  <button className="btn-primary" onClick={handleReset}>🔄 Check Another</button>
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ textAlign: "center", paddingTop: 8, paddingBottom: 32 }}>
+                  <HoverButton onClick={handleReset}>
+                    <Typewriter text="Check Another" loop={true} />
+                  </HoverButton>
                 </motion.div>
               )}
 
@@ -387,5 +411,6 @@ export default function Dashboard() {
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
     </main>
+    </>
   );
 }

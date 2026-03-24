@@ -9,6 +9,7 @@ interface Claim {
   context?: string;
   verdict?: "TRUE" | "FALSE" | "PARTIALLY_TRUE" | "UNVERIFIABLE";
   confidence?: number;
+  evidence?: Array<{ title: string; snippet: string; url: string }>;
 }
 
 interface OriginalTextProps {
@@ -299,31 +300,145 @@ export default function OriginalText({
               const isHovered = activeHoveredId === segment.claim.id;
 
               return (
-                <mark
-                  key={i}
-                  onClick={() => handleClaimClick(segment.claim.id)}
-                  onMouseEnter={() => handleMouseEnter(segment.claim.id)}
-                  onMouseLeave={handleMouseLeave}
-                  style={{
-                    display: "inline",
-                    padding: "2px 6px",
-                    margin: "0 1px",
-                    borderRadius: "4px",
-                    background: colors.bg,
-                    border: `1px solid ${colors.border}`,
-                    color: colors.text,
-                    cursor: "pointer",
-                    transition: "all 0.2s ease",
-                    boxShadow: isHovered ? `0 0 0 2px ${colors.border}` : "none",
-                    transform: isHovered ? "scale(1.02)" : "none",
-                  }}
-                  title={`Claim #${segment.claim.id}: ${segment.claim.verdict || "Pending"} (${segment.claim.confidence || 0}%)`}
-                >
-                  {segment.content}
-                  <sup style={{ fontSize: "10px", marginLeft: "2px", opacity: 0.7 }}>
-                    [{segment.claim.id}]
-                  </sup>
-                </mark>
+                <div key={i} style={{ display: "inline-block", position: "relative" }}>
+                  <mark
+                    onClick={() => handleClaimClick(segment.claim.id)}
+                    onMouseEnter={() => handleMouseEnter(segment.claim.id)}
+                    onMouseLeave={handleMouseLeave}
+                    style={{
+                      display: "inline",
+                      padding: "2px 6px",
+                      margin: "0 1px",
+                      borderRadius: "4px",
+                      background: colors.bg,
+                      border: `1px solid ${colors.border}`,
+                      color: colors.text,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                      boxShadow: isHovered ? `0 0 0 2px ${colors.border}` : "none",
+                      transform: isHovered ? "scale(1.02)" : "none",
+                    }}
+                    title={`Claim #${segment.claim.id}: ${segment.claim.verdict || "Pending"} (${segment.claim.confidence || 0}%)`}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Claim: ${segment.claim.claim}. Verdict: ${segment.claim.verdict}. Confidence: ${segment.claim.confidence}%`}
+                  >
+                    {segment.content}
+                    <sup style={{ fontSize: "10px", marginLeft: "2px", opacity: 0.7 }}>
+                      [{segment.claim.id}]
+                    </sup>
+                  </mark>
+
+                  {/* Evidence Tooltip on Hover */}
+                  <AnimatePresence>
+                    {isHovered && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                        animate={{ opacity: 1, y: -110, scale: 1 }}
+                        exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                        transition={{ duration: 0.2 }}
+                        style={{
+                          position: "absolute",
+                          bottom: "100%",
+                          left: "50%",
+                          transform: "translateX(-50%)",
+                          zIndex: 50,
+                          pointerEvents: "none",
+                        }}
+                      >
+                        <div
+                          style={{
+                            background: `linear-gradient(135deg, rgba(0,0,0,0.95) 0%, rgba(20,20,40,0.95) 100%)`,
+                            border: `1px solid ${colors.border}`,
+                            borderRadius: "8px",
+                            padding: "12px",
+                            minWidth: "280px",
+                            maxWidth: "380px",
+                            boxShadow: `0 8px 32px rgba(0,0,0,0.4), 0 0 12px ${colors.border}40`,
+                            backdropFilter: "blur(10px)",
+                          }}
+                        >
+                          {/* Verdict Badge */}
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                            <span style={{ color: colors.text, fontWeight: 700, fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                              {segment.claim.verdict?.replace(/_/g, " ") || "PENDING"}
+                            </span>
+                            <span style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px" }}>
+                              {segment.claim.confidence}% confident
+                            </span>
+                          </div>
+
+                          {/* Claim */}
+                          <p style={{
+                            color: "rgba(255,255,255,0.9)",
+                            fontSize: "12px",
+                            margin: "0 0 8px 0",
+                            lineHeight: 1.4,
+                            fontWeight: 500,
+                          }}>
+                            {segment.claim.claim}
+                          </p>
+
+                          {/* Evidence Snippets */}
+                          {segment.claim.evidence && segment.claim.evidence.length > 0 && (
+                            <>
+                              <div style={{ fontSize: "10px", color: "rgba(255,255,255,0.5)", textTransform: "uppercase", marginBottom: "6px", letterSpacing: "0.05em" }}>
+                                Evidence:
+                              </div>
+                              {segment.claim.evidence.slice(0, 2).map((evid, idx) => (
+                                <div key={idx} style={{ marginBottom: "6px", paddingBottom: "6px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                                  <a
+                                    href={evid.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{
+                                      color: colors.text,
+                                      fontSize: "11px",
+                                      fontWeight: 600,
+                                      textDecoration: "none",
+                                      display: "block",
+                                      marginBottom: "2px",
+                                      transition: "opacity 0.15s",
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.opacity = "0.7"}
+                                    onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+                                  >
+                                    {evid.title.length > 45 ? evid.title.substring(0, 45) + "..." : evid.title}
+                                  </a>
+                                  <p style={{
+                                    color: "rgba(255,255,255,0.5)",
+                                    fontSize: "10px",
+                                    margin: "2px 0",
+                                    lineHeight: 1.3,
+                                    fontStyle: "italic",
+                                  }}>
+                                    "{evid.snippet.length > 80 ? evid.snippet.substring(0, 80) + "..." : evid.snippet}"
+                                  </p>
+                                </div>
+                              ))}
+                            </>
+                          )}
+
+                          {/* Arrow pointing down */}
+                          <div
+                            style={{
+                              position: "absolute",
+                              bottom: "-6px",
+                              left: "50%",
+                              width: "12px",
+                              height: "12px",
+                              background: `rgba(0,0,0,0.95)`,
+                              border: `1px solid ${colors.border}`,
+                              borderTop: "none",
+                              borderLeft: "none",
+                              transform: "translateX(-50%) rotate(45deg)",
+                            }}
+                          />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               );
             })}
           </div>

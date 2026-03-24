@@ -5,9 +5,10 @@ import os
 from typing import AsyncGenerator, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.exceptions import RequestValidationError
 
 from models import ExtractURLRequest, VerifyRequest
 from services.ai_detector import detect_ai_text
@@ -19,13 +20,27 @@ from services.verifier import verify_claim
 from services.debate_verifier import debate_verify
 from services.media_detector import detect_media
 from services.fusion import generate_fusion_report
+from services.file_processor import process_file
 from utils.cache import get_cache
+from utils.errors import (
+    VerificationError,
+    verification_error_handler,
+    validation_error_handler,
+    generic_error_handler,
+    InvalidInputError,
+    MediaAnalysisError,
+)
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Fact & Claim Verification API", version="2.0.0")
+
+# Register error handlers
+app.add_exception_handler(VerificationError, verification_error_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(Exception, generic_error_handler)
 
 # Initialize cache (works even if Redis is not available)
 claim_cache = get_cache()
@@ -70,6 +85,50 @@ async def verify_route(request: VerifyRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Upload and process a file (PDF, image, or text).
+    Extracts text and runs the verification pipeline.
+    """
+    try:
+        if not file.filename:
+            return {"error": "No filename provided"}
+        
+        # Read file content
+        content = await file.read()
+        
+        logger.info(f"Received file upload: {file.filename} ({len(content)} bytes)")
+        
+        # Process file
+        extracted_text = await process_file(file.filename, content)
+        
+        if not extracted_text:
+            return {
+                "error": f"Could not extract text from {file.filename}. Supported formats: PDF, JPG, PNG, GIF, WEBP, TXT"
+            }
+        
+        logger.info(f"Successfully extracted {len(extracted_text)} characters from {file.filename}")
+        
+        # Create VerifyRequest with extracted text
+        verify_request = VerifyRequest(text=extracted_text)
+        
+        # Return streaming response
+        return StreamingResponse(
+            pipeline_stream(verify_request),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        
+    except Exception as e:
+        logger.error(f"File upload error: {e}", exc_info=True)
+        return {"error": f"File processing failed: {str(e)}"}
 
 
 async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:

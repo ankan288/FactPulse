@@ -3,136 +3,96 @@ import base64
 import json
 import logging
 import os
-import re
 from typing import List, Dict, Any
 
 import httpx
-import litellm
 
 logger = logging.getLogger(__name__)
 
-LLM_TIMEOUT = 30.0
 HTTP_TIMEOUT = 10.0
+SIGHTENGINE_API_URL = "https://api.sightengine.com/1.0/check.json"
 
-async def _fetch_image_base64(client: httpx.AsyncClient, url: str) -> str:
-    """Fetch an image from a URL and return it as a base64 data URI."""
-    try:
-        response = await client.get(url, timeout=HTTP_TIMEOUT)
-        response.raise_for_status()
-        
-        content_type = response.headers.get("Content-Type", "").lower()
-        if not content_type.startswith("image/"):
-            # Best guess fallback
-            if url.lower().endswith(".png"): content_type = "image/png"
-            elif url.lower().endswith(".webp"): content_type = "image/webp"
-            else: content_type = "image/jpeg"
-            
-        b64_data = base64.b64encode(response.content).decode("utf-8")
-        return f"data:{content_type};base64,{b64_data}"
-    except Exception as e:
-        logger.warning(f"Failed to fetch image {url}: {e}")
-        return ""
-
-async def _analyze_single_image(img_data: Dict, client: httpx.AsyncClient) -> Dict[str, Any]:
-    """Analyze a single image using Gemini Multimodal."""
+async def _analyze_single_image(img_data: Dict, client: httpx.AsyncClient, api_key: str) -> Dict[str, Any]:
+    """Analyze a single image using Sightengine API for deepfake detection."""
     url = img_data.get("url")
-    context = img_data.get("context", "")
     caption = img_data.get("caption", "")
     
     result = {
         "url": url,
         "ai_probability": 0,
-        "label": "ERROR",
-        "reasoning": "Analysis failed",
+        "label": "LIKELY_REAL",
+        "reasoning": "Unable to analyze image.",
         "caption": caption
     }
 
     if not url:
         return result
 
-    b64_uri = await _fetch_image_base64(client, url)
-    if not b64_uri:
-        result["reasoning"] = "Failed to download image from source."
-        return result
-        
-    prompt = f"""You are a digital forensics expert acting as part of a misinformation detection pipeline. 
-Analyze the provided image for signs of AI-generation or synthetic manipulation (deepfakes).
-Pay attention to:
-- Unnatural artifacts, extra/missing fingers, bizarre textures.
-- Nonsensical background text or logic.
-- Inconsistent lighting or extreme smoothness.
-
-Surrounding context from the article: "{context}"
-Image caption from the article: "{caption}"
-
-Output ONLY a raw valid JSON object (no markdown formatting, no code blocks) with the following structure:
-{{
-  "ai_probability": (number between 0 and 100),
-  "label": (one of: "LIKELY_REAL", "AI_ASSISTED", "LIKELY_AI_GENERATED"),
-  "reasoning": "Detailed explanation of exactly what visual features led to this conclusion."
-}}
-"""
-
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
-        result["reasoning"] = "GEMINI_API_KEY not configured. Multimodal analysis requires Gemini."
-        return result
-
     try:
-        loop = asyncio.get_event_loop()
-        response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: litellm.completion(
-                    model="gemini/gemini-1.5-flash-latest",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": b64_uri}}
-                            ]
-                        }
-                    ],
-                    api_key=gemini_key,
-                    temperature=0.1,
-                    max_tokens=600,
-                ),
-            ),
-            timeout=LLM_TIMEOUT,
+        # Call Sightengine API with the image URL
+        params = {
+            "image": url,
+            "models": "deepfake,properties",  # Check for deepfakes and general properties
+            "api_user": api_key.split(":")[0] if ":" in api_key else "api",
+            "api_secret": api_key,
+        }
+        
+        response = await client.get(
+            SIGHTENGINE_API_URL,
+            params=params,
+            timeout=HTTP_TIMEOUT
         )
+        response.raise_for_status()
         
-        raw = response.choices[0].message.content.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
+        data = response.json()
         
-        analysis = json.loads(raw)
-        
-        # Merge results
-        ai_prob = max(0, min(100, int(analysis.get("ai_probability", 0))))
-        label = analysis.get("label", "LIKELY_REAL")
-        
-        # Heuristic adjustment based on metadata/context
-        # If the caption explicitly says "AI generated", bump the score
-        if "ai generated" in caption.lower() or "midjourney" in caption.lower() or "dall-e" in caption.lower():
-            ai_prob = max(ai_prob, 90)
-            label = "LIKELY_AI_GENERATED"
+        if data.get("status") == "success":
+            # Extract deepfake probability
+            deepfake_score = data.get("deepfake", {}).get("score", 0)
+            ai_probability = int(deepfake_score * 100)
             
-        result.update({
-            "ai_probability": ai_prob,
-            "label": label,
-            "reasoning": analysis.get("reasoning", "No detailed reasoning provided.")
-        })
-        
+            # Determine label based on score
+            if ai_probability >= 70:
+                label = "LIKELY_AI_GENERATED"
+            elif ai_probability >= 40:
+                label = "AI_ASSISTED"
+            else:
+                label = "LIKELY_REAL"
+            
+            reasoning = f"Deepfake probability: {ai_probability}%. "
+            
+            # Add additional context from properties
+            properties = data.get("properties", {})
+            if properties.get("text_detection"):
+                reasoning += "Text detected in image. "
+            if properties.get("object_detection"):
+                reasoning += "Multiple objects detected. "
+                
+            result.update({
+                "ai_probability": ai_probability,
+                "label": label,
+                "reasoning": reasoning
+            })
+        else:
+            error_msg = data.get("error", {}).get("message", "Unknown error")
+            result["reasoning"] = f"Sightengine analysis error: {error_msg}"
+            
     except Exception as e:
         logger.error(f"Media analysis failed for {url}: {e}")
-        result["reasoning"] = f"Verification failed: {e}"
-
+        result["reasoning"] = f"Analysis failed: {str(e)}"
+    
     return result
 
+
 async def detect_media(images_data: List[Dict]) -> List[Dict]:
-    """Concurrently process a list of scraped images for AI detection."""
+    """Concurrently process a list of scraped images for AI detection using Sightengine."""
     if not images_data:
+        return []
+    
+    # Get Sightengine API key
+    api_key = os.getenv("SIGHTENGINE_API_KEY")
+    if not api_key:
+        logger.info("SIGHTENGINE_API_KEY not configured. Skipping media detection.")
         return []
         
     # Limit to maximum 3 images to prevent overwhelming rate limits and timeout
@@ -143,7 +103,7 @@ async def detect_media(images_data: List[Dict]) -> List[Dict]:
     }
     
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
-        tasks = [_analyze_single_image(img, client) for img in images_to_process]
+        tasks = [_analyze_single_image(img, client, api_key) for img in images_to_process]
         results = await asyncio.gather(*tasks, return_exceptions=False)
         
     return list(results)
