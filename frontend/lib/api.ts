@@ -49,16 +49,22 @@ export interface MediaReport {
   caption: string;
 }
 
+export interface Summary {
+  total: number;
+  true: number;
+  false: number;
+  partial: number;
+  unverifiable: number;
+  overallScore: number;
+  averageConfidence: number;
+  processingTime: number;
+  confidenceDistribution: { range: string; count: number }[];
+  topSources: { name: string; count: number }[];
+}
+
 export interface DoneEvent {
   step: "done";
-  summary: {
-    total: number;
-    true: number;
-    false: number;
-    partial: number;
-    unverifiable: number;
-    overallScore: number;
-  };
+  summary: Summary;
   fusion: FusionReport;
 }
 

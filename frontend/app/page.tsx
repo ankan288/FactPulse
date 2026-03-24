@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import { FiActivity } from "react-icons/fi";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
@@ -10,6 +11,10 @@ const Beams = dynamic(() => import("@/components/Beams"), { ssr: false });
 
 export default function Home() {
   const router = useRouter();
+  const [homeHover, setHomeHover] = useState(false);
+  const [docsHover, setDocsHover] = useState(false);
+  const [ctaHover, setCtaHover] = useState(false);
+  const [learnMoreHover, setLearnMoreHover] = useState(false);
 
   return (
     <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -43,11 +48,11 @@ export default function Home() {
             <div style={{ display: "flex", alignItems: "center", gap: 12, color: "#fff", fontWeight: 600, fontSize: 18, letterSpacing: "-0.5px" }}>
               <FiActivity size={24} style={{ color: "#fff" }} /> FactPulse
             </div>
-            <div style={{ display: "flex", gap: 32, fontSize: 15, fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>
-              <Link href="/dashboard" style={{ color: "rgba(255,255,255,0.7)", textDecoration: "none" }}>
-                <span style={{ cursor: "pointer", transition: "color 0.2s" }} onMouseOver={e => e.currentTarget.style.color = "#fff"} onMouseOut={e => e.currentTarget.style.color = "rgba(255,255,255,0.7)"}>Home</span>
+            <div style={{ display: "flex", gap: 32, fontSize: 15, fontWeight: 500 }}>
+              <Link href="/dashboard" style={{ textDecoration: "none" }}>
+                <span style={{ cursor: "pointer", transition: "color 0.2s", color: homeHover ? "#fff" : "rgba(255,255,255,0.7)" }} onMouseEnter={() => setHomeHover(true)} onMouseLeave={() => setHomeHover(false)}>Home</span>
               </Link>
-              <span style={{ cursor: "pointer", transition: "color 0.2s" }} onMouseOver={e => e.currentTarget.style.color = "#fff"} onMouseOut={e => e.currentTarget.style.color = "rgba(255,255,255,0.7)"}>Docs</span>
+              <span style={{ cursor: "pointer", transition: "color 0.2s", color: docsHover ? "#fff" : "rgba(255,255,255,0.7)" }} onMouseEnter={() => setDocsHover(true)} onMouseLeave={() => setDocsHover(false)}>Docs</span>
             </div>
           </div>
         </div>
@@ -68,9 +73,20 @@ export default function Home() {
               <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap", position: "relative", zIndex: 10 }}>
                 <button
                   onClick={() => router.push("/signin")}
-                  style={{ background: "#fff", color: "#000", padding: "16px 36px", borderRadius: 999, fontSize: 16, fontWeight: 600, border: "none", cursor: "pointer", transition: "transform 0.2s" }}
-                  onMouseOver={e => e.currentTarget.style.transform = "scale(1.05)"}
-                  onMouseOut={e => e.currentTarget.style.transform = "scale(1)"}
+                  style={{ 
+                    background: "#fff", 
+                    color: "#000", 
+                    padding: "16px 36px", 
+                    borderRadius: 999, 
+                    fontSize: 16, 
+                    fontWeight: 600, 
+                    border: "none", 
+                    cursor: "pointer", 
+                    transition: "transform 0.2s",
+                    transform: ctaHover ? "scale(1.05)" : "scale(1)"
+                  }}
+                  onMouseEnter={() => setCtaHover(true)}
+                  onMouseLeave={() => setCtaHover(false)}
                 >
                   Get Started
                 </button>
@@ -78,9 +94,23 @@ export default function Home() {
                 <a
                   href="http://localhost:8000/docs"
                   target="_blank"
-                  style={{ display: "inline-block", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.7)", padding: "16px 36px", borderRadius: 999, fontSize: 16, fontWeight: 600, border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", backdropFilter: "blur(10px)", transition: "background 0.2s, color 0.2s", textDecoration: "none" }}
-                  onMouseOver={e => { e.currentTarget.style.background = "rgba(255,255,255,0.1)"; e.currentTarget.style.color = "#fff"; }}
-                  onMouseOut={e => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
+                  rel="noopener noreferrer"
+                  style={{ 
+                    display: "inline-block", 
+                    background: learnMoreHover ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.05)", 
+                    color: learnMoreHover ? "#fff" : "rgba(255,255,255,0.7)", 
+                    padding: "16px 36px", 
+                    borderRadius: 999, 
+                    fontSize: 16, 
+                    fontWeight: 600, 
+                    border: "1px solid rgba(255,255,255,0.1)", 
+                    cursor: "pointer", 
+                    backdropFilter: "blur(10px)", 
+                    transition: "background 0.2s, color 0.2s", 
+                    textDecoration: "none" 
+                  }}
+                  onMouseEnter={() => setLearnMoreHover(true)}
+                  onMouseLeave={() => setLearnMoreHover(false)}
                 >
                   Learn More
                 </a>

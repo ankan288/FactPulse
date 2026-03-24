@@ -18,6 +18,7 @@ import Preloader from "@/components/Preloader";
 import ColorBends from "@/components/ColorBends";
 import { HoverButton } from "@/components/HoverButton";
 import { Typewriter } from "@/components/Typewriter";
+import EnhancedStatistics from "@/components/EnhancedStatistics";
 import {
   streamVerify,
   type PipelineEvent,
@@ -26,10 +27,10 @@ import {
   type DoneEvent,
   type MediaReport,
   type FusionReport,
+  type Summary,
 } from "@/lib/api";
 
 type AppState = "input" | "running" | "done" | "error";
-interface Summary { total: number; true: number; false: number; partial: number; unverifiable: number; overallScore: number; }
 interface AIResult  { score: number; label: "LIKELY_HUMAN" | "AI_ASSISTED" | "LIKELY_AI"; signals: string[]; }
 
 export default function Dashboard() {
@@ -343,6 +344,13 @@ export default function Dashboard() {
                 <motion.div style={{ position: "sticky", top: 12, zIndex: 10, marginBottom: 20 }} initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
                   <AccuracyReport summary={summary} fusion={fusionReport || undefined} />
                 </motion.div>
+              )}
+
+              {/* Enhanced Statistics */}
+              {appState === "done" && summary && (
+                <div style={{ marginBottom: 32 }}>
+                  <EnhancedStatistics data={summary} />
+                </div>
               )}
 
               {/* Original text with highlighted claims */}

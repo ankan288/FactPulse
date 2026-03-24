@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT = 10.0
 SIGHTENGINE_API_URL = "https://api.sightengine.com/1.0/check.json"
 
-async def _analyze_single_image(img_data: Dict, client: httpx.AsyncClient, api_key: str) -> Dict[str, Any]:
+async def _analyze_single_image(img_data: Dict, client: httpx.AsyncClient, api_user: str, api_secret: str) -> Dict[str, Any]:
     """Analyze a single image using Sightengine API for deepfake detection."""
     url = img_data.get("url")
     caption = img_data.get("caption", "")
@@ -33,8 +33,8 @@ async def _analyze_single_image(img_data: Dict, client: httpx.AsyncClient, api_k
         params = {
             "image": url,
             "models": "deepfake,properties",  # Check for deepfakes and general properties
-            "api_user": api_key.split(":")[0] if ":" in api_key else "api",
-            "api_secret": api_key,
+            "api_user": api_user,
+            "api_secret": api_secret,
         }
         
         response = await client.get(
@@ -90,9 +90,20 @@ async def detect_media(images_data: List[Dict]) -> List[Dict]:
         return []
     
     # Get Sightengine API key
-    api_key = os.getenv("SIGHTENGINE_API_KEY")
-    if not api_key:
-        logger.info("SIGHTENGINE_API_KEY not configured. Skipping media detection.")
+    api_user = os.getenv("SIGHTENGINE_API_USER")
+    api_secret = os.getenv("SIGHTENGINE_API_SECRET")
+    
+    # Fallback for previous configuration (api_user:api_secret in SIGHTENGINE_API_KEY)
+    if not api_user or not api_secret:
+        api_key = os.getenv("SIGHTENGINE_API_KEY")
+        if api_key and ":" in api_key:
+            api_user, api_secret = api_key.split(":", 1)
+        elif api_key:
+            api_secret = api_key
+            api_user = "api" # Try default if user only supplied key, although unlikely to work
+            
+    if not isinstance(api_user, str) or not isinstance(api_secret, str) or not api_user or not api_secret:
+        logger.info("SIGHTENGINE_API_USER and/or SIGHTENGINE_API_SECRET not configured. Skipping media detection.")
         return []
         
     # Limit to maximum 3 images to prevent overwhelming rate limits and timeout
@@ -103,7 +114,7 @@ async def detect_media(images_data: List[Dict]) -> List[Dict]:
     }
     
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
-        tasks = [_analyze_single_image(img, client, api_key) for img in images_to_process]
+        tasks = [_analyze_single_image(img, client, api_user, api_secret) for img in images_to_process]
         results = await asyncio.gather(*tasks, return_exceptions=False)
         
     return list(results)

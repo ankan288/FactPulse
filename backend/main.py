@@ -2,12 +2,15 @@ import asyncio
 import json
 import logging
 import os
+import time
+from collections import Counter
+from urllib.parse import urlparse
 from typing import AsyncGenerator, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from models import ExtractURLRequest, VerifyRequest
@@ -95,10 +98,14 @@ async def upload_file(file: UploadFile = File(...)):
     """
     try:
         if not file.filename:
-            return {"error": "No filename provided"}
+            return JSONResponse({"error": "No filename provided"}, status_code=400)
         
         # Read file content
-        content = await file.read()
+        try:
+            content = await file.read()
+        except Exception as read_err:
+            logger.error(f"Failed to read file {file.filename}: {read_err}")
+            return JSONResponse({"error": f"Failed to read file: {str(read_err)}"}, status_code=400)
         
         logger.info(f"Received file upload: {file.filename} ({len(content)} bytes)")
         
@@ -106,9 +113,9 @@ async def upload_file(file: UploadFile = File(...)):
         extracted_text = await process_file(file.filename, content)
         
         if not extracted_text:
-            return {
+            return JSONResponse({
                 "error": f"Could not extract text from {file.filename}. Supported formats: PDF, JPG, PNG, GIF, WEBP, TXT"
-            }
+            }, status_code=400)
         
         logger.info(f"Successfully extracted {len(extracted_text)} characters from {file.filename}")
         
@@ -136,6 +143,7 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
         return f"data: {json.dumps({'step': step, **data})}\n\n"
 
     try:
+        start_time = time.time()
         text = request.text
 
         # ── Fetch article if URL provided ──────────────────────────────────
@@ -174,6 +182,8 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
 
         # ── Steps 2‑4: Search → Rank → Verify each claim ──────────────────
         stats = {"true": 0, "false": 0, "partial": 0, "unverifiable": 0, "total_confidence": 0}
+        all_confidences = []
+        all_sources = []
         debate_count = 0   # track how many debates have run (Groq rate limit guard)
 
         for claim in claims:
@@ -182,7 +192,7 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
 
             # ── Check cache first ──────────────────────────────────────────
             cached_result = claim_cache.get(claim_text)
-            if cached_result:
+            if cached_result and isinstance(cached_result, dict) and "verdict" in cached_result:
                 logger.info("Using cached result for claim %s", cid)
                 # Update claim ID to match current request
                 cached_result["claimId"] = cid
@@ -190,10 +200,10 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
 
                 # Update stats
                 v = cached_result.get("verdict", "UNVERIFIABLE")
-                stats["true"] += v == "TRUE"
-                stats["false"] += v == "FALSE"
-                stats["partial"] += v == "PARTIALLY_TRUE"
-                stats["unverifiable"] += v == "UNVERIFIABLE"
+                stats["true"] += int(v == "TRUE")
+                stats["false"] += int(v == "FALSE")
+                stats["partial"] += int(v == "PARTIALLY_TRUE")
+                stats["unverifiable"] += int(v == "UNVERIFIABLE")
                 stats["total_confidence"] += cached_result.get("confidence", 0)
                 await asyncio.sleep(0.05)
                 continue
@@ -239,7 +249,11 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
                 })
                 try:
                     debate_result = await debate_verify(claim, ranked)
-                    result = debate_result
+                    if debate_result and isinstance(debate_result, dict) and "verdict" in debate_result:
+                        result = debate_result
+                    else:
+                        logger.warning("Debate returned invalid result for claim %s", cid)
+                        result["reasoning"] += " (Debate escalation returned invalid result)"
                 except Exception as e:
                     # Keep the single-agent result if debate itself fails
                     logger.error("Debate failed for claim %s: %s", cid, e, exc_info=True)
@@ -255,11 +269,20 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
             yield emit("result", result)
 
             v = result.get("verdict", "UNVERIFIABLE")
-            stats["true"] += v == "TRUE"
-            stats["false"] += v == "FALSE"
-            stats["partial"] += v == "PARTIALLY_TRUE"
-            stats["unverifiable"] += v == "UNVERIFIABLE"
-            stats["total_confidence"] += result.get("confidence", 0)
+            conf = result.get("confidence", 0)
+            stats["true"] += int(v == "TRUE")
+            stats["false"] += int(v == "FALSE")
+            stats["partial"] += int(v == "PARTIALLY_TRUE")
+            stats["unverifiable"] += int(v == "UNVERIFIABLE")
+            stats["total_confidence"] += conf
+            all_confidences.append(conf)
+            
+            # Extract domains for top sources
+            for cit in result.get("citations", []):
+                domain = urlparse(cit.get("url", "")).netloc
+                if domain:
+                    all_sources.append(domain.replace("www.", ""))
+            
             await asyncio.sleep(0.05)
 
         # ── AI text detection ──────────────────────────────────────────────
@@ -294,13 +317,35 @@ async def pipeline_stream(request: VerifyRequest) -> AsyncGenerator[str, None]:
 
         # ── Summary & Fusion ───────────────────────────────────────────────
         total = len(claims)
+        
+        # Calculate confidence distribution
+        buckets = {"0-20": 0, "20-40": 0, "40-60": 0, "60-80": 0, "80-100": 0}
+        for s in all_confidences:
+            if s <= 20: buckets["0-20"] += 1
+            elif s <= 40: buckets["20-40"] += 1
+            elif s <= 60: buckets["40-60"] += 1
+            elif s <= 80: buckets["60-80"] += 1
+            else: buckets["80-100"] += 1
+        conf_dist = [{"range": k, "count": v} for k, v in buckets.items()]
+        
+        # Calculate top sources
+        source_counts = Counter(all_sources)
+        top_sources = [{"name": k, "count": v} for k, v in source_counts.most_common(5)]
+        
+        processing_time = round(time.time() - start_time, 2)
+        avg_confidence = round(sum(all_confidences) / len(all_confidences)) if all_confidences else 0
+
         text_summary = {
             "total": total,
             "true": stats["true"],
             "false": stats["false"],
             "partial": stats["partial"],
             "unverifiable": stats["unverifiable"],
-            "overallScore": round(stats["total_confidence"] / total) if total else 0,
+            "overallScore": avg_confidence,  # keep for backward compatibility
+            "averageConfidence": avg_confidence,
+            "processingTime": processing_time,
+            "confidenceDistribution": conf_dist,
+            "topSources": top_sources
         }
         
         fusion_report = generate_fusion_report(text_summary, media_reports)
