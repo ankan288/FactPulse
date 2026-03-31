@@ -186,6 +186,28 @@ class ClaimCache:
             logger.error("Unexpected cache clear error: %s", e)
             return False
 
+    def get_file_cache(self, file_hash: str) -> Optional[str]:
+        """Retrieve cached text extraction from a file hash."""
+        if not self.enabled or not self.client:
+            return None
+        try:
+            cached = self.client.get(f"file:ext:{file_hash}")
+            if cached:
+                logger.info(f"File cache HIT for hash: {file_hash[:8]}...")
+                return cached
+            return None
+        except: return None
+        
+    def set_file_cache(self, file_hash: str, extracted_text: str, ttl: int = 86400 * 7):
+        """Cache extracted text for a specific file hash (7 days TTL)."""
+        if not self.enabled or not self.client:
+            return False
+        try:
+            self.client.setex(f"file:ext:{file_hash}", ttl, extracted_text)
+            logger.info(f"Cached file extraction for hash: {file_hash[:8]}...")
+            return True
+        except: return False
+
     def get_stats(self) -> Optional[Dict]:
         """Get cache statistics.
 

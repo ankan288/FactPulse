@@ -93,8 +93,8 @@ async def verify_route(request: VerifyRequest):
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     """
-    Upload and process a file (PDF, image, or text).
-    Extracts text and runs the verification pipeline.
+    Upload and process a media file (PDF, Image, Audio, Video, or Text).
+    Extracts facts specifically automatically.
     """
     try:
         if not file.filename:
@@ -114,7 +114,7 @@ async def upload_file(file: UploadFile = File(...)):
         
         if not extracted_text:
             return JSONResponse({
-                "error": f"Could not extract text from {file.filename}. Supported formats: PDF, JPG, PNG, GIF, WEBP, TXT"
+                "error": f"Could not extract text from {file.filename}. Supported formats: PDF, JPG, PNG, GIF, WEBP, TXT, MP3, WAV, M4A, OGG, FLAC, MP4, MOV, AVI, MKV, WEBM"
             }, status_code=400)
         
         logger.info(f"Successfully extracted {len(extracted_text)} characters from {file.filename}")
